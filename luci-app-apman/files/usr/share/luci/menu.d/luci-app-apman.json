@@ -1,0 +1,14 @@
+{
+	"admin/services/apman": {
+		"title": "AP Manager",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "apman/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-apman" ],
+			"uci": { "apman": true }
+		}
+	}
+}

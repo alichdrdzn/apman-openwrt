@@ -1,0 +1,240 @@
+#!/bin/sh
+# apman-apply - read UCI device config, (re)generate and load nftables rules
+#
+# Design (all in bridge family => independent of wired/wifi backhaul):
+#   chain blockchain  prio -300  drop traffic of blocked/paused MACs
+#   chain discovery   prio -250  learn unknown MACs into counting sets
+#   chain lim_dl/ul   prio -150  per-device rate limits (drop over-limit)
+#   chain acc_up/dn   prio -100  per-device byte counters (after limiter,
+#                                so capped-away traffic is not "usage")
+#
+# Regeneration is atomic (flush+recreate in one transaction) and preserves
+# existing counter values. Test hook: APMAN_DEVICES_TSV=/path.tsv skips uci.
+
+RUN=${APMAN_RUN_DIR:-/tmp/apman}
+DEVS=$RUN/devices.tsv
+GEN=$RUN/apman.nft
+FLUSH=$RUN/apman-flush.nft
+
+mkdir -p "$RUN"
+
+[ -f /lib/functions.sh ] && . /lib/functions.sh
+
+read_setting() {
+	local v
+	v=$(uci -q get "apman.global.$1")
+	[ -n "$v" ] && echo "$v" || echo "$2"
+}
+
+# ---------- device list from uci ----------
+collect_uci() {
+	: > "$DEVS.new"
+	config_load apman
+	config_foreach emit_device device
+	mv "$DEVS.new" "$DEVS"
+}
+
+emit_device() {
+	local id mac down up lim block pause alias
+	config_get mac "$1" mac
+	[ -n "$mac" ] || return 0
+	mac=$(echo "$mac" | tr 'A-F' 'a-f')
+	id=$(echo "$mac" | tr -d ':')
+	config_get down "$1" down_kbps 0
+	config_get up "$1" up_kbps 0
+	config_get lim "$1" limit_enabled 0
+	config_get block "$1" block 0
+	config_get pause "$1" pause_until 0
+	config_get alias "$1" alias ""
+	# keep the TSV column count stable: an empty field would collapse under
+	# IFS=<tab> reads and shift the section name into the alias slot
+	alias=$(printf '%s' "$alias" | tr '	\n' '  ')
+	[ -n "$alias" ] || alias=-
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$id" "$mac" "$down" "$up" "$lim" "$block" "$pause" "$alias" "$1" \
+		>> "$DEVS.new"
+}
+
+# ---------- current counters: "name<TAB>bytes" ----------
+read_counters() {
+	nft --terse list table bridge apman 2>/dev/null | awk '
+		/^\t*counter (up|dn)_[0-9a-f]+ \{/ { key = $2; sub(/\{/, "", key); want = 1; next }
+		want && /packets/ {
+			by = 0
+			for (i = 1; i <= NF; i++) if ($i == "bytes") by = $(i + 1)
+			print key "\t" by; want = 0
+		}'
+}
+
+# ---------- exclusions ----------
+collect_exclusions() {
+	EXCL=$RUN/excl.tmp
+	{
+		echo "00:00:00:00:00:00"
+		# our own MACs (bridge + member ports)
+		cat /sys/class/net/br-lan/address 2>/dev/null
+		for p in /sys/class/net/br-lan/brif/*; do
+			cat "$p/address" 2>/dev/null
+		done
+		# default gateway MAC (the modem): usually all internet traffic
+		# would otherwise land in the unknown-devices list
+		local gw mac
+		gw=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
+		[ -n "$gw" ] && ip neigh show "$gw" 2>/dev/null | awk -v gw="$gw" '$1==gw {print $5}'
+		# user-ignored MACs (comma-separated uci string)
+		local ign m
+		ign=$(read_setting ignored_macs "")
+		if [ -n "$ign" ]; then
+			echo "$ign" | tr ',' '\n'
+		fi
+	} | tr 'A-F' 'a-f' | grep -E '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' | sort -u > "$EXCL"
+}
+
+# ---------- main ----------
+if [ -n "$APMAN_DEVICES_TSV" ]; then
+	cp "$APMAN_DEVICES_TSV" "$DEVS"
+else
+	collect_uci
+fi
+
+# snapshot counters before regenerating
+read_counters > "$RUN/counters.tmp"
+CNT=$(cat "$RUN/counters.tmp" 2>/dev/null)
+
+collect_exclusions
+
+ENABLED=$(read_setting enabled 1)
+[ "$ENABLED" = 1 ] || DISABLED=1
+
+OUT() { printf '%s\n' "$1" >> "$GEN"; }
+
+: > "$GEN"
+# flush keeps sets/counters, which makes redefinition EBUSY; delete the whole
+# table instead (skipped on first run), then recreate in the same transaction
+if nft list table bridge apman >/dev/null 2>&1; then
+	OUT "delete table bridge apman"
+fi
+OUT "table bridge apman {"
+
+# constant exclusion set (nft rejects an empty elements block, so emit it
+# only when there is at least one member)
+: > "$GEN.el"
+while IFS= read -r m; do
+	[ -n "$m" ] && echo "$m" >> "$GEN.el"
+done < "$EXCL"
+# managed MACs are not "unknown" either
+while IFS='	' read -r id mac _; do
+	[ -n "$mac" ] && echo "$mac" >> "$GEN.el"
+done < "$DEVS"
+if [ -s "$GEN.el" ]; then
+	OUT "	set nodisc { type ether_addr; flags constant; elements = {"
+	while IFS= read -r m; do
+		OUT "		$m ,"
+	done < "$GEN.el"
+	OUT "	} }"
+else
+	OUT "	set nodisc { type ether_addr; flags constant; }"
+fi
+
+OUT "	set unknown_up { type ether_addr; flags dynamic,timeout; counter; size 512; timeout 6h; }"
+OUT "	set unknown_dn { type ether_addr; flags dynamic,timeout; counter; size 512; timeout 6h; }"
+
+# blocked set: block=1 or pause_until in the future
+NOW=$(date +%s)
+: > "$GEN.el"
+while IFS='	' read -r id mac down up lim block pause alias sec; do
+	[ "$block" = 1 ] && echo "$mac" >> "$GEN.el"
+	[ -n "$pause" ] && [ "$pause" -gt 0 ] 2>/dev/null && [ "$pause" -gt "$NOW" ] 2>/dev/null \
+		&& echo "$mac" >> "$GEN.el"
+done < "$DEVS"
+if [ -s "$GEN.el" ]; then
+	OUT "	set blocked { type ether_addr; flags constant; elements = {"
+	while IFS= read -r m; do
+		OUT "		$m ,"
+	done < "$GEN.el"
+	OUT "	} }"
+else
+	OUT "	set blocked { type ether_addr; flags constant; }"
+fi
+rm -f "$GEN.el"
+
+# named counters for every managed device, seeded with preserved values
+# (nft requires `counter name X` references to be declared in the same file)
+while IFS='	' read -r id mac rest; do
+	[ -n "$id" ] || continue
+	bytes=$(printf '%s\n' "$CNT" | awk -F'	' -v n="up_$id" '$1==n {print $2; exit}')
+	[ -n "$bytes" ] || bytes=0
+	OUT "	counter up_$id { packets 0 bytes $bytes ; }"
+	bytes=$(printf '%s\n' "$CNT" | awk -F'	' -v n="dn_$id" '$1==n {print $2; exit}')
+	[ -n "$bytes" ] || bytes=0
+	OUT "	counter dn_$id { packets 0 bytes $bytes ; }"
+done < "$DEVS"
+
+OUT "	chain blockchain {"
+OUT "		type filter hook prerouting priority -300; policy accept;"
+OUT "		ether saddr @blocked drop"
+OUT "		ether daddr @blocked drop"
+OUT "	}"
+
+OUT "	chain discovery {"
+OUT "		type filter hook prerouting priority -250; policy accept;"
+OUT "		ether saddr != @nodisc add @unknown_up { ether saddr }"
+OUT "		ether daddr & 01:00:00:00:00:00 == 00:00:00:00:00:00 ether daddr != @nodisc add @unknown_dn { ether daddr }"
+OUT "	}"
+
+if [ -z "$DISABLED" ]; then
+	# lim_dl: frames addressed TO the device = its download
+	OUT "	chain lim_dl {"
+	OUT "		type filter hook prerouting priority -150; policy accept;"
+	while IFS='	' read -r id mac down up lim block pause alias sec; do
+		[ "$lim" = 1 ] || continue
+		if [ -n "$down" ] && [ "$down" -gt 0 ] 2>/dev/null; then
+			BPS=$((down * 125))
+			BURST=$((BPS / 8)); [ "$BURST" -lt 16384 ] && BURST=16384
+			OUT "		ether daddr $mac limit rate over $BPS bytes/second burst $BURST bytes drop"
+		fi
+	done < "$DEVS"
+	OUT "	}"
+
+	# lim_ul: frames sent BY the device = its upload
+	OUT "	chain lim_ul {"
+	OUT "		type filter hook prerouting priority -150; policy accept;"
+	while IFS='	' read -r id mac down up lim block pause alias sec; do
+		[ "$lim" = 1 ] || continue
+		if [ -n "$up" ] && [ "$up" -gt 0 ] 2>/dev/null; then
+			BPS=$((up * 125))
+			BURST=$((BPS / 8)); [ "$BURST" -lt 16384 ] && BURST=16384
+			OUT "		ether saddr $mac limit rate over $BPS bytes/second burst $BURST bytes drop"
+		fi
+	done < "$DEVS"
+	OUT "	}"
+
+	OUT "	chain acc_up {"
+	OUT "		type filter hook prerouting priority -100; policy accept;"
+	while IFS='	' read -r id mac rest; do
+		OUT "		ether saddr $mac counter name up_$id"
+	done < "$DEVS"
+	OUT "	}"
+
+	OUT "	chain acc_dn {"
+	OUT "		type filter hook prerouting priority -100; policy accept;"
+	while IFS='	' read -r id mac rest; do
+		OUT "		ether daddr $mac counter name dn_$id"
+	done < "$DEVS"
+	OUT "	}"
+fi
+
+OUT "}"
+
+# validate then load atomically; keep old rules on error
+if ! nft -c -f "$GEN" 2>/dev/null; then
+	echo "apman-apply: generated ruleset failed validation" >&2
+	exit 1
+fi
+if ! nft -f "$GEN"; then
+	echo "apman-apply: failed to load ruleset" >&2
+	exit 1
+fi
+
+rm -f "$EXCL" "$GEN" "$RUN/counters.tmp" "$DEVS.new"
+exit 0

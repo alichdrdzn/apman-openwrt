@@ -1,0 +1,17 @@
+config apman 'global'
+	option enabled '1'
+	option interval '10'
+	option history_days '30'
+	option snapshot_minutes '10'
+
+# One section per managed device. The id is the MAC with colons
+# stripped, lowercased. apman-apply derives counter names from it.
+#
+#config device 'daabbccddeeff'
+#	option mac 'AA:BB:CC:DD:EE:FF'
+#	option alias 'Kids tablet'
+#	option down_kbps '5000'
+#	option up_kbps '1000'
+#	option limit_enabled '1'
+#	option block '0'
+#	option pause_until '0'

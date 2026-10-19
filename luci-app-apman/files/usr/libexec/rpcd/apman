@@ -1,0 +1,187 @@
+#!/bin/sh
+# rpcd shell plugin: ubus object "apman"
+# Verified protocol (rpcd plugin.c + mwan3 reference):
+#   "<plugin> list"             -> method table on stdout
+#   "<plugin> call <method>"    -> full call JSON on stdin (one line), reply JSON on stdout
+
+RUN=/tmp/apman
+
+# escape $1 for uci: backslash and double quote (uci itself quotes the value)
+esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+int_or() { case "$1" in ''|*[!0-9]*) echo "$2" ;; *) echo "$1" ;; esac; }
+
+sec_for_mac() { # $1 = mac ; echo uci section name holding it
+	uci -q show apman 2>/dev/null | awk -F'[.=]' -v m="$1" '
+		$3 == "mac" {
+			v = $4
+			gsub(/\047/, "", v) # uci show wraps values in single quotes
+			if (tolower(v) == m) { print $2; exit }
+		}'
+}
+
+jget() { echo "$INPUT" | jsonfilter -e "@.$1" 2>/dev/null; }
+
+ok() { echo '{"ok":1}'; }
+bad() { printf '{"ok":0,"err":"%s"}\n' "$1"; }
+
+apply_now() {
+	/usr/sbin/apman-apply >/dev/null 2>&1 && ok || bad "apply failed"
+}
+
+case "$1" in
+list)
+	cat <<'EOF'
+{"status":{},"history":{},"apply":{},"save":{"mac":"x","alias":"x","down_kbps":1,"up_kbps":1,"limit_enabled":1,"block":1},"pause":{"mac":"x","minutes":1},"unblock":{"mac":"x"},"forget":{"mac":"x"},"adopt":{"mac":"x","alias":"x"},"ignore":{"mac":"x"},"settings":{"enabled":1,"interval":1,"history_days":1,"snapshot_minutes":1,"ignored_macs":"x"}}
+EOF
+	;;
+call)
+	METHOD=$2
+	INPUT=$(cat)
+
+	MAC=$(jget mac | tr 'A-F' 'a-f')
+	case "$MAC" in
+	*:*:*) ;; # contains colons, look like a mac
+	*) MAC="" ;; # methods that need a mac reject this below
+	esac
+	ID=$(echo "$MAC" | tr -d ':')
+
+	case "$METHOD" in
+	status)
+		cat "$RUN/status.json" 2>/dev/null || echo '{}'
+		;;
+	history)
+		# rows are "date 	 id 	 up 	 dn"; daily.tsv and today.tsv both hold
+		# today's rows, so merge per (date,id) with today winning, then emit
+		# {"days":{"YYYY-MM-DD":{"id":[up,dn],...},...}}
+		rows=$(cat /etc/apman/daily.tsv "$RUN/today.tsv" 2>/dev/null | awk -F'	' 'NF >= 4')
+		if [ -n "$rows" ]; then
+			merged=$(printf '%s\n' "$rows" | awk -F'	' -v OFS='	' '
+				{ u[$1 SUBSEP $2] = $3 + 0; d[$1 SUBSEP $2] = $4 + 0; k[$1 SUBSEP $2] = 1 }
+				END { for (x in k) { split(x, a, SUBSEP); printf "%s	%s	%d	%d\n", a[1], a[2], u[x], d[x] } }')
+			printf '{"days":{'
+			first=1
+			for d in $(printf '%s\n' "$merged" | cut -f1 | sort -u); do
+				[ $first = 1 ] || printf ','
+				first=0
+				printf '"%s":{' "$d"
+				f2=1
+				printf '%s\n' "$merged" | awk -F'	' -v d="$d" '$1 == d { print $2 "	" $3 "	" $4 }' \
+				| while IFS='	' read -r _id _up _dn; do
+					[ -n "$_id" ] || continue
+					[ "$f2" = 1 ] || printf ','
+					f2=0
+					printf '"%s":[%s,%s]' "$_id" "$(int_or "$_up" 0)" "$(int_or "$_dn" 0)"
+				done
+				printf '}'
+			done
+			printf '}}\n'
+		else
+			printf '{"days":{}}\n'
+		fi
+		;;
+	save)
+		[ -n "$MAC" ] || { bad "bad mac"; exit 0; }
+		ALIAS=$(esc "$(jget alias)")
+		DOWN=$(int_or "$(jget down_kbps)" 0)
+		UP=$(int_or "$(jget up_kbps)" 0)
+		LIM=$(int_or "$(jget limit_enabled)" 0)
+		BLK=$(int_or "$(jget block)" 0)
+		sec=$(sec_for_mac "$MAC")
+		if [ -z "$sec" ]; then
+			sec="dev_$ID"
+			uci -q set "apman.$sec=device"
+		fi
+		uci -q set "apman.$sec.mac=$MAC"
+		uci -q set apman.$sec.alias="$ALIAS"
+		uci -q set "apman.$sec.down_kbps=$DOWN"
+		uci -q set "apman.$sec.up_kbps=$UP"
+		uci -q set "apman.$sec.limit_enabled=$LIM"
+		uci -q set "apman.$sec.block=$BLK"
+		uci -q commit apman
+		apply_now
+		;;
+	pause)
+		[ -n "$MAC" ] || { bad "bad mac"; exit 0; }
+		MIN=$(int_or "$(jget minutes)" 60)
+		sec=$(sec_for_mac "$MAC")
+		[ -n "$sec" ] || { bad "unknown device"; exit 0; }
+		if [ "$MIN" = 0 ]; then
+			uci -q set "apman.$sec.pause_until=0"
+		else
+			uci -q set "apman.$sec.pause_until=$(( $(date +%s) + MIN * 60 ))"
+		fi
+		uci -q commit apman
+		apply_now
+		;;
+	unblock)
+		[ -n "$MAC" ] || { bad "bad mac"; exit 0; }
+		sec=$(sec_for_mac "$MAC")
+		[ -n "$sec" ] || { bad "unknown device"; exit 0; }
+		uci -q set "apman.$sec.block=0"
+		uci -q set "apman.$sec.pause_until=0"
+		uci -q commit apman
+		apply_now
+		;;
+	forget)
+		[ -n "$MAC" ] || { bad "bad mac"; exit 0; }
+		sec=$(sec_for_mac "$MAC")
+		[ -n "$sec" ] || { bad "unknown device"; exit 0; }
+		uci -q delete "apman.$sec"
+		uci -q commit apman
+		apply_now
+		;;
+	adopt)
+		[ -n "$MAC" ] || { bad "bad mac"; exit 0; }
+		ALIAS=$(esc "$(jget alias)")
+		sec=$(sec_for_mac "$MAC")
+		if [ -n "$sec" ]; then
+			bad "already managed"
+			exit 0
+		fi
+		sec="dev_$ID"
+		uci -q set "apman.$sec=device"
+		uci -q set "apman.$sec.mac=$MAC"
+		uci -q set apman.$sec.alias="$ALIAS"
+		uci -q set "apman.$sec.down_kbps=0"
+		uci -q set "apman.$sec.up_kbps=0"
+		uci -q set "apman.$sec.limit_enabled=0"
+		uci -q set "apman.$sec.block=0"
+		uci -q commit apman
+		apply_now
+		;;
+	ignore)
+		[ -n "$MAC" ] || { bad "bad mac"; exit 0; }
+		IGN=$(uci -q get apman.global.ignored_macs)
+		case ",$IGN," in
+		*",$MAC,"*) ;;
+		*) uci -q set "apman.global.ignored_macs=${IGN:+$IGN,}$MAC" ;;
+		esac
+		uci -q commit apman
+		apply_now
+		;;
+	settings)
+		for kv in "enabled:$(jget enabled)" "interval:$(jget interval)" \
+			"history_days:$(jget history_days)" "snapshot_minutes:$(jget snapshot_minutes)"; do
+			k=${kv%%:*}; v=${kv#*:}
+			[ -n "$v" ] || continue
+			case "$v" in *[!0-9]*) continue ;; esac
+			uci -q set "apman.global.$k=$v"
+		done
+		IGNJ=$(jget ignored_macs)
+		[ -n "$IGNJ" ] && uci -q set apman.global.ignored_macs="$IGNJ"
+		uci -q commit apman
+		apply_now
+		;;
+	apply)
+		apply_now
+		;;
+	*)
+		echo '{"error":"unknown method"}'
+		;;
+	esac
+	;;
+*)
+	echo '{"error":"bad request"}'
+	;;
+esac

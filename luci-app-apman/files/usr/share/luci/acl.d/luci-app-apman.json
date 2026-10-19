@@ -1,0 +1,22 @@
+{
+	"luci-app-apman": {
+		"description": "Grant access to AP Manager",
+		"read": {
+			"ubus": {
+				"apman": [ "status", "history" ],
+				"session": [ "access" ]
+			},
+			"file": {
+				"/tmp/apman/status.json": [ "read" ],
+				"/etc/apman/daily.tsv": [ "read" ]
+			},
+			"uci": [ "apman" ]
+		},
+		"write": {
+			"ubus": {
+				"apman": [ "save", "pause", "unblock", "forget", "adopt", "settings", "ignore", "apply" ]
+			},
+			"uci": [ "apman" ]
+		}
+	}
+}

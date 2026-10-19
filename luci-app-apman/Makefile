@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-apman
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=Ali
@@ -57,8 +57,8 @@ define Package/luci-app-apman/install
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./files/usr/share/luci/menu.d/luci-app-apman.json $(1)/usr/share/luci/menu.d/luci-app-apman.json
 
-	$(INSTALL_DIR) $(1)/usr/share/luci/acl.d
-	$(INSTALL_DATA) ./files/usr/share/luci/acl.d/luci-app-apman.json $(1)/usr/share/luci/acl.d/luci-app-apman.json
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/luci-app-apman.json $(1)/usr/share/rpcd/acl.d/luci-app-apman.json
 
 	$(INSTALL_DIR) $(1)/usr/share/luci/view/apman
 	$(INSTALL_DATA) ./files/usr/share/luci/view/apman/overview.js $(1)/usr/share/luci/view/apman/overview.js

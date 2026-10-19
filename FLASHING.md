@@ -305,9 +305,9 @@ immediately.
 
    ```sh
    apk add kmod-nft-bridge            # a: from OpenWrt's repo
-   scp -O luci-app-apman-1.0.0-r1.apk root@192.168.1.1:/tmp/
+   scp -O luci-app-apman-1.0.0-r2.apk root@192.168.1.1:/tmp/
    ssh root@192.168.1.1
-   apk add /tmp/luci-app-apman-1.0.0-r1.apk
+   apk add /tmp/luci-app-apman-1.0.0-r2.apk
    /etc/init.d/apman enable
    /etc/init.d/apman start
    ```

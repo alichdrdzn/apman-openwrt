@@ -20,7 +20,7 @@ wifi extender. Footprint: ~70KB (package 17KB compressed + 6.4KB
 | Path | What it is |
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
-| `dist/luci-app-apman-1.0.0-r1.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
+| `dist/luci-app-apman-1.0.0-r2.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
 | `FLASHING.md` | Exact flashing steps: Windows and Linux VM with NAT |
 | `INSTALL.md` | Package install, usage and configuration reference |
 
@@ -30,10 +30,10 @@ wifi extender. Footprint: ~70KB (package 17KB compressed + 6.4KB
 2. Install the package:
 
    ```sh
-   scp -O dist/luci-app-apman-1.0.0-r1.apk root@192.168.1.1:/tmp/
+   scp -O dist/luci-app-apman-1.0.0-r2.apk root@192.168.1.1:/tmp/
    ssh root@192.168.1.1
    apk add kmod-nft-bridge
-   apk add /tmp/luci-app-apman-1.0.0-r1.apk
+   apk add /tmp/luci-app-apman-1.0.0-r2.apk
    /etc/init.d/apman enable
    /etc/init.d/apman start
    ```
@@ -60,7 +60,7 @@ make defconfig
 make package/luci-app-apman/compile
 
 # 4. Result
-ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r1.apk
+ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r2.apk
 ```
 
 Host prerequisite: `apt-get install libncurses-dev`.

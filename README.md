@@ -27,6 +27,7 @@ may be a cable or a wifi extender, that never matters. Footprint:
 | `dist/luci-app-apman-1.0.0-r3.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
 | `FLASHING.md` | Exact flashing steps: Windows and Linux VM with NAT |
 | `INSTALL.md` | Package install, usage and configuration reference |
+| `test/e2e-harness.sh` | Host E2E harness: hwsim wifi + wired fixture, 38 checks |
 
 ## Quick start
 

@@ -3,24 +3,28 @@
 Per-device user management for an OpenWrt access point (bridge mode), built
 for the Xiaomi Mi Router 4A Gigabit Edition (v1, 16MB flash).
 
-- Per-device download/upload speed caps
+- Per-device download/upload speed caps, wifi clients only
+- Daily and monthly wifi usage caps per device (0 = off), released
+  automatically when the day or month rolls over
 - Pause (timed) and block, wired and wireless
 - Live speeds per device
-- Persistent daily traffic history
+- Persistent daily wifi traffic history
 - Dark LuCI dashboard: Services -> AP Manager
 
-Everything runs on the router. Enforcement and accounting use nftables
-bridge-family rules on `br-lan`, so wired and wifi clients are treated
-identically and nothing depends on whether the uplink is a cable or a
-wifi extender. Footprint: ~70KB (package 17KB compressed + 6.4KB
-`kmod-nft-bridge`).
+Everything runs on the router. Speed caps, usage caps and accounting
+use nftables bridge-family rules on `br-lan`, scoped to the wifi
+bridge ports (the bridge ports backed by a `phy80211` radio): wired
+clients are never rate-limited and their traffic is never counted.
+Block and pause still stop wired and wifi traffic alike. The uplink
+may be a cable or a wifi extender, that never matters. Footprint:
+~70KB (package 17KB compressed + 6.4KB `kmod-nft-bridge`).
 
 ## Repository contents
 
 | Path | What it is |
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
-| `dist/luci-app-apman-1.0.0-r2.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
+| `dist/luci-app-apman-1.0.0-r3.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
 | `FLASHING.md` | Exact flashing steps: Windows and Linux VM with NAT |
 | `INSTALL.md` | Package install, usage and configuration reference |
 
@@ -30,10 +34,10 @@ wifi extender. Footprint: ~70KB (package 17KB compressed + 6.4KB
 2. Install the package:
 
    ```sh
-   scp -O dist/luci-app-apman-1.0.0-r2.apk root@192.168.1.1:/tmp/
+   scp -O dist/luci-app-apman-1.0.0-r3.apk root@192.168.1.1:/tmp/
    ssh root@192.168.1.1
    apk add kmod-nft-bridge
-   apk add /tmp/luci-app-apman-1.0.0-r2.apk
+   apk add /tmp/luci-app-apman-1.0.0-r3.apk
    /etc/init.d/apman enable
    /etc/init.d/apman start
    ```
@@ -60,7 +64,7 @@ make defconfig
 make package/luci-app-apman/compile
 
 # 4. Result
-ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r2.apk
+ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r3.apk
 ```
 
 Host prerequisite: `apt-get install libncurses-dev`.

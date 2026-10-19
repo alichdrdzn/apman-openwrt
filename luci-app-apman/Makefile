@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-apman
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=Ali
@@ -20,12 +20,13 @@ endef
 
 define Package/luci-app-apman/description
   User management for an OpenWrt access point (bridge mode), built for
-  the Xiaomi Mi Router 4A Gigabit. Per-device download/upload caps,
-  pause and block, live speeds and persistent traffic history behind
-  a dark LuCI dashboard. Enforcement and accounting use nftables
-  bridge-family rules on br-lan, so wired and wifi clients are treated
-  identically and nothing depends on which port carries the uplink.
-  Requires ~70KB on top of the base image (plus kmod-nft-bridge).
+  the Xiaomi Mi Router 4A Gigabit. Per-device download/upload caps and
+  daily/monthly wifi usage caps, pause and block, live speeds and
+  persistent traffic history behind a dark LuCI dashboard. Enforcement
+  and accounting use nftables bridge-family rules on br-lan, scoped to
+  the wifi ports: wired LAN clients are never limited or counted, while
+  pause and block cut both. Requires ~70KB on top of the base image
+  (plus kmod-nft-bridge).
 endef
 
 define Package/luci-app-apman/conffiles

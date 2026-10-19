@@ -22,6 +22,15 @@ sec_for_mac() { # $1 = mac ; echo uci section name holding it
 
 jget() { echo "$INPUT" | jsonfilter -e "@.$1" 2>/dev/null; }
 
+# is key present in the request JSON? absent key and JSON null both count
+# as missing; an empty string is a present, intentional value (clear it)
+has() {
+	local v
+	v=$(echo "$INPUT" | jsonfilter -e "@.$1" 2>/dev/null) || return 1
+	[ "$v" != null ] || return 1
+	return 0
+}
+
 ok() { echo '{"ok":1}'; }
 bad() { printf '{"ok":0,"err":"%s"}\n' "$1"; }
 
@@ -32,7 +41,7 @@ apply_now() {
 case "$1" in
 list)
 	cat <<'EOF'
-{"status":{},"history":{},"apply":{},"save":{"mac":"x","alias":"x","down_kbps":1,"up_kbps":1,"limit_enabled":1,"block":1},"pause":{"mac":"x","minutes":1},"unblock":{"mac":"x"},"forget":{"mac":"x"},"adopt":{"mac":"x","alias":"x"},"ignore":{"mac":"x"},"settings":{"enabled":1,"interval":1,"history_days":1,"snapshot_minutes":1,"ignored_macs":"x"}}
+{"status":{},"history":{},"apply":{},"save":{"mac":"x","alias":"x","down_kbps":1,"up_kbps":1,"limit_enabled":1,"block":1,"quota_daily_mb":1,"quota_monthly_mb":1},"pause":{"mac":"x","minutes":1},"unblock":{"mac":"x"},"forget":{"mac":"x"},"adopt":{"mac":"x","alias":"x"},"ignore":{"mac":"x"},"settings":{"enabled":1,"interval":1,"history_days":1,"snapshot_minutes":1,"ignored_macs":"x"}}
 EOF
 	;;
 call)
@@ -82,22 +91,35 @@ call)
 		;;
 	save)
 		[ -n "$MAC" ] || { bad "bad mac"; exit 0; }
-		ALIAS=$(esc "$(jget alias)")
-		DOWN=$(int_or "$(jget down_kbps)" 0)
-		UP=$(int_or "$(jget up_kbps)" 0)
-		LIM=$(int_or "$(jget limit_enabled)" 0)
-		BLK=$(int_or "$(jget block)" 0)
 		sec=$(sec_for_mac "$MAC")
 		if [ -z "$sec" ]; then
 			sec="dev_$ID"
 			uci -q set "apman.$sec=device"
+			uci -q set "apman.$sec.mac=$MAC"
 		fi
-		uci -q set "apman.$sec.mac=$MAC"
-		uci -q set apman.$sec.alias="$ALIAS"
-		uci -q set "apman.$sec.down_kbps=$DOWN"
-		uci -q set "apman.$sec.up_kbps=$UP"
-		uci -q set "apman.$sec.limit_enabled=$LIM"
-		uci -q set "apman.$sec.block=$BLK"
+		# only touch fields present in the request: a partial payload (block
+		# toggle from the card passes mac+block only) must not wipe the rest
+		if has alias; then
+			uci -q set apman.$sec.alias="$(esc "$(jget alias)")"
+		fi
+		if has down_kbps; then
+			uci -q set "apman.$sec.down_kbps=$(int_or "$(jget down_kbps)" 0)"
+		fi
+		if has up_kbps; then
+			uci -q set "apman.$sec.up_kbps=$(int_or "$(jget up_kbps)" 0)"
+		fi
+		if has limit_enabled; then
+			uci -q set "apman.$sec.limit_enabled=$(int_or "$(jget limit_enabled)" 0)"
+		fi
+		if has block; then
+			uci -q set "apman.$sec.block=$(int_or "$(jget block)" 0)"
+		fi
+		if has quota_daily_mb; then
+			uci -q set "apman.$sec.quota_daily_mb=$(int_or "$(jget quota_daily_mb)" 0)"
+		fi
+		if has quota_monthly_mb; then
+			uci -q set "apman.$sec.quota_monthly_mb=$(int_or "$(jget quota_monthly_mb)" 0)"
+		fi
 		uci -q commit apman
 		apply_now
 		;;

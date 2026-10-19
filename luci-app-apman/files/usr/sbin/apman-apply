@@ -2,19 +2,33 @@
 # apman-apply - read UCI device config, (re)generate and load nftables rules
 #
 # Design (all in bridge family => independent of wired/wifi backhaul):
-#   chain blockchain  prio -300  drop traffic of blocked/paused MACs
-#   chain discovery   prio -250  learn unknown MACs into counting sets
-#   chain lim_dl/ul   prio -150  per-device rate limits (drop over-limit)
-#   chain acc_up/dn   prio -100  per-device byte counters (after limiter,
-#                                so capped-away traffic is not "usage")
+#   prerouting blockchain  prio -300  drop traffic of blocked/paused MACs
+#                              (block/pause cuts wired AND wifi on purpose)
+#   prerouting discovery   prio -250  learn unknown MACs into counting sets
+#   prerouting lim_ul      prio -150  upload rate limits, wifi ingress only
+#   prerouting quota_ul    prio -140  usage cap (daily/monthly), wifi only
+#   prerouting acc_up      prio -100  upload counters, wifi ingress only
+#   forward     lim_dl     prio -150  download rate limits, wifi egress only
+#   forward     quota_dl   prio -140  usage cap (daily/monthly), wifi only
+#   forward     acc_dn     prio -100  download counters, wifi egress only
 #
-# Regeneration is atomic (flush+recreate in one transaction) and preserves
-# existing counter values. Test hook: APMAN_DEVICES_TSV=/path.tsv skips uci.
+# Wifi-only scoping: limits and usage accounting match `iifname/oifname
+# @wifports`, where wifports = bridge ports carrying a phy80211 parent.
+# Upload is scoped at prerouting via iifname (ingress port known there);
+# download must run on the forward hook because only there is the egress
+# port known (a wifi client's download arrives on the uplink port).
+# Limiter -150 and quota -140 both precede accounting -100 in their hook,
+# so capped-away and quota-dropped bytes never count as usage.
+#
+# Regeneration is atomic (delete+recreate in one transaction) and preserves
+# existing counter values. Test hooks: APMAN_DEVICES_TSV=/path.tsv skips uci,
+# APMAN_WIFI_PORTS="wlan0 wlan1" overrides wifi port discovery.
 
 RUN=${APMAN_RUN_DIR:-/tmp/apman}
 DEVS=$RUN/devices.tsv
 GEN=$RUN/apman.nft
 FLUSH=$RUN/apman-flush.nft
+QUOTA=$RUN/quota.mac
 
 mkdir -p "$RUN"
 
@@ -27,6 +41,8 @@ read_setting() {
 }
 
 # ---------- device list from uci ----------
+# columns: id  mac  down_kbps  up_kbps  limit  block  pause  alias  uci_section
+#          quota_daily_mb  quota_monthly_mb
 collect_uci() {
 	: > "$DEVS.new"
 	config_load apman
@@ -35,7 +51,7 @@ collect_uci() {
 }
 
 emit_device() {
-	local id mac down up lim block pause alias
+	local id mac down up lim block pause alias sec qdm qmm
 	config_get mac "$1" mac
 	[ -n "$mac" ] || return 0
 	mac=$(echo "$mac" | tr 'A-F' 'a-f')
@@ -46,13 +62,35 @@ emit_device() {
 	config_get block "$1" block 0
 	config_get pause "$1" pause_until 0
 	config_get alias "$1" alias ""
+	config_get qdm "$1" quota_daily_mb 0
+	config_get qmm "$1" quota_monthly_mb 0
+	qdm=$(printf '%s' "$qdm" | tr -cd '0-9'); [ -n "$qdm" ] || qdm=0
+	qmm=$(printf '%s' "$qmm" | tr -cd '0-9'); [ -n "$qmm" ] || qmm=0
 	# keep the TSV column count stable: an empty field would collapse under
 	# IFS=<tab> reads and shift the section name into the alias slot
-	alias=$(printf '%s' "$alias" | tr '	\n' '  ')
+	alias=$(printf '%s' "$alias" | tr '\t\n' '  ')
 	[ -n "$alias" ] || alias=-
-	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 		"$id" "$mac" "$down" "$up" "$lim" "$block" "$pause" "$alias" "$1" \
-		>> "$DEVS.new"
+		"$qdm" "$qmm" >> "$DEVS.new"
+}
+
+# ---------- wifi bridge ports (have a phy80211 parent) ----------
+collect_wifi_ports() {
+	WIFI=$RUN/wifiports.tmp
+	: > "$WIFI"
+	if [ -n "$APMAN_WIFI_PORTS" ]; then
+		printf '%s\n' "$APMAN_WIFI_PORTS" | tr ',' ' ' | tr ' ' '\n' | grep -v '^$' >> "$WIFI"
+	else
+		for p in /sys/class/net/br-lan/brif/*; do
+			[ -e "$p" ] || continue
+			# brif/<port> symlinks to the port's brport dir (not the
+			# netdev dir), so test phy80211 via /sys/class/net/<portname>
+			n=$(basename "$p")
+			[ -e "/sys/class/net/$n/phy80211" ] && echo "$n" >> "$WIFI"
+		done
+	fi
+	sort -u -o "$WIFI" "$WIFI"
 }
 
 # ---------- current counters: "name<TAB>bytes" ----------
@@ -102,6 +140,7 @@ read_counters > "$RUN/counters.tmp"
 CNT=$(cat "$RUN/counters.tmp" 2>/dev/null)
 
 collect_exclusions
+collect_wifi_ports
 
 ENABLED=$(read_setting enabled 1)
 [ "$ENABLED" = 1 ] || DISABLED=1
@@ -139,10 +178,21 @@ fi
 OUT "	set unknown_up { type ether_addr; flags dynamic,timeout; counter; size 512; timeout 6h; }"
 OUT "	set unknown_dn { type ether_addr; flags dynamic,timeout; counter; size 512; timeout 6h; }"
 
+# wifi port set: limits and usage accounting only match these ports
+if [ -s "$WIFI" ]; then
+	OUT "	set wifports { type ifname; flags interval; elements = {"
+	while IFS= read -r p; do
+		[ -n "$p" ] && OUT "		\"$p\" ,"
+	done < "$WIFI"
+	OUT "	} }"
+else
+	OUT "	set wifports { type ifname; flags interval; }"
+fi
+
 # blocked set: block=1 or pause_until in the future
 NOW=$(date +%s)
 : > "$GEN.el"
-while IFS='	' read -r id mac down up lim block pause alias sec; do
+while IFS='	' read -r id mac down up lim block pause alias sec qdm qmm; do
 	[ "$block" = 1 ] && echo "$mac" >> "$GEN.el"
 	[ -n "$pause" ] && [ "$pause" -gt 0 ] 2>/dev/null && [ "$pause" -gt "$NOW" ] 2>/dev/null \
 		&& echo "$mac" >> "$GEN.el"
@@ -156,16 +206,33 @@ if [ -s "$GEN.el" ]; then
 else
 	OUT "	set blocked { type ether_addr; flags constant; }"
 fi
+
+# over-quota set: MACs the collector marked over a daily/monthly usage cap
+: > "$GEN.el"
+if [ -f "$QUOTA" ]; then
+	while IFS= read -r m; do
+		[ -n "$m" ] && echo "$m" >> "$GEN.el"
+	done < "$QUOTA"
+fi
+if [ -s "$GEN.el" ]; then
+	OUT "	set overquota { type ether_addr; flags constant; elements = {"
+	while IFS= read -r m; do
+		OUT "		$m ,"
+	done < "$GEN.el"
+	OUT "	} }"
+else
+	OUT "	set overquota { type ether_addr; flags constant; }"
+fi
 rm -f "$GEN.el"
 
 # named counters for every managed device, seeded with preserved values
 # (nft requires `counter name X` references to be declared in the same file)
 while IFS='	' read -r id mac rest; do
 	[ -n "$id" ] || continue
-	bytes=$(printf '%s\n' "$CNT" | awk -F'	' -v n="up_$id" '$1==n {print $2; exit}')
+	bytes=$(printf '%s\n' "$CNT" | awk -F'\t' -v n="up_$id" '$1==n {print $2; exit}')
 	[ -n "$bytes" ] || bytes=0
 	OUT "	counter up_$id { packets 0 bytes $bytes ; }"
-	bytes=$(printf '%s\n' "$CNT" | awk -F'	' -v n="dn_$id" '$1==n {print $2; exit}')
+	bytes=$(printf '%s\n' "$CNT" | awk -F'\t' -v n="dn_$id" '$1==n {print $2; exit}')
 	[ -n "$bytes" ] || bytes=0
 	OUT "	counter dn_$id { packets 0 bytes $bytes ; }"
 done < "$DEVS"
@@ -183,43 +250,56 @@ OUT "		ether daddr & 01:00:00:00:00:00 == 00:00:00:00:00:00 ether daddr != @nodi
 OUT "	}"
 
 if [ -z "$DISABLED" ]; then
-	# lim_dl: frames addressed TO the device = its download
-	OUT "	chain lim_dl {"
-	OUT "		type filter hook prerouting priority -150; policy accept;"
-	while IFS='	' read -r id mac down up lim block pause alias sec; do
-		[ "$lim" = 1 ] || continue
-		if [ -n "$down" ] && [ "$down" -gt 0 ] 2>/dev/null; then
-			BPS=$((down * 125))
-			BURST=$((BPS / 8)); [ "$BURST" -lt 16384 ] && BURST=16384
-			OUT "		ether daddr $mac limit rate over $BPS bytes/second burst $BURST bytes drop"
-		fi
-	done < "$DEVS"
-	OUT "	}"
-
-	# lim_ul: frames sent BY the device = its upload
+	# lim_ul: frames sent BY the device on a wifi port = its upload
 	OUT "	chain lim_ul {"
 	OUT "		type filter hook prerouting priority -150; policy accept;"
-	while IFS='	' read -r id mac down up lim block pause alias sec; do
+	while IFS='	' read -r id mac down up lim block pause alias sec qdm qmm; do
 		[ "$lim" = 1 ] || continue
 		if [ -n "$up" ] && [ "$up" -gt 0 ] 2>/dev/null; then
 			BPS=$((up * 125))
 			BURST=$((BPS / 8)); [ "$BURST" -lt 16384 ] && BURST=16384
-			OUT "		ether saddr $mac limit rate over $BPS bytes/second burst $BURST bytes drop"
+			OUT "		iifname @wifports ether saddr $mac limit rate over $BPS bytes/second burst $BURST bytes drop"
 		fi
 	done < "$DEVS"
+	OUT "	}"
+
+	# quota_ul: over-quota upload from a wifi port
+	OUT "	chain quota_ul {"
+	OUT "		type filter hook prerouting priority -140; policy accept;"
+	OUT "		iifname @wifports ether saddr @overquota drop"
 	OUT "	}"
 
 	OUT "	chain acc_up {"
 	OUT "		type filter hook prerouting priority -100; policy accept;"
 	while IFS='	' read -r id mac rest; do
-		OUT "		ether saddr $mac counter name up_$id"
+		OUT "		iifname @wifports ether saddr $mac counter name up_$id"
 	done < "$DEVS"
 	OUT "	}"
 
+	# lim_dl: frames addressed TO the device, leaving via a wifi port
+	# (forward hook: the egress port is unknown at prerouting)
+	OUT "	chain lim_dl {"
+	OUT "		type filter hook forward priority -150; policy accept;"
+	while IFS='	' read -r id mac down up lim block pause alias sec qdm qmm; do
+		[ "$lim" = 1 ] || continue
+		if [ -n "$down" ] && [ "$down" -gt 0 ] 2>/dev/null; then
+			BPS=$((down * 125))
+			BURST=$((BPS / 8)); [ "$BURST" -lt 16384 ] && BURST=16384
+			OUT "		oifname @wifports ether daddr $mac limit rate over $BPS bytes/second burst $BURST bytes drop"
+		fi
+	done < "$DEVS"
+	OUT "	}"
+
+	# quota_dl: over-quota download leaving via a wifi port
+	OUT "	chain quota_dl {"
+	OUT "		type filter hook forward priority -140; policy accept;"
+	OUT "		oifname @wifports ether daddr @overquota drop"
+	OUT "	}"
+
 	OUT "	chain acc_dn {"
-	OUT "		type filter hook prerouting priority -100; policy accept;"
+	OUT "		type filter hook forward priority -100; policy accept;"
 	while IFS='	' read -r id mac rest; do
-		OUT "		ether daddr $mac counter name dn_$id"
+		OUT "		oifname @wifports ether daddr $mac counter name dn_$id"
 	done < "$DEVS"
 	OUT "	}"
 fi
@@ -236,5 +316,5 @@ if ! nft -f "$GEN"; then
 	exit 1
 fi
 
-rm -f "$EXCL" "$GEN" "$RUN/counters.tmp" "$DEVS.new"
+rm -f "$EXCL" "$WIFI" "$GEN" "$RUN/counters.tmp" "$DEVS.new"
 exit 0

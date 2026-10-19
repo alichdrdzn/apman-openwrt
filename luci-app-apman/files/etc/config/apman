@@ -15,3 +15,5 @@ config apman 'global'
 #	option limit_enabled '1'
 #	option block '0'
 #	option pause_until '0'
+#	option quota_daily_mb '0'      # wifi usage cap per day (0 = off)
+#	option quota_monthly_mb '0'    # wifi usage cap per month (0 = off)

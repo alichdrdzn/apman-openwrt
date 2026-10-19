@@ -7,11 +7,20 @@
 #   /tmp/apman/rates.tsv    id \t up_bps \t dn_bps \t ts \t last_change
 #   /tmp/apman/unknown.tsv  mac \t up_bytes \t dn_bytes \t last_change
 #   /tmp/apman/wifi.tsv     mac (wifi-associated right now)
+#   /tmp/apman/qsums.tsv    id \t day_bytes \t month_bytes  (usage caps)
+#   /tmp/apman/quota.mac    mac over a daily/monthly cap (feeds nft overquota)
 #   /tmp/apman/status.json  full UI payload (jshn-built)
 #   /etc/apman/daily.tsv    date \t id \t up_bytes \t dn_bytes (flash, every
 #                           snapshot_minutes; current + past days)
 #
 # Also clears expired pauses (uci + re-apply) and prunes old history.
+# Usage caps: each sample recomputes per-device day/month totals and writes
+# quota.mac; apman-apply is re-run only when that list changes, so wifi-only
+# quota drops appear/disappear without touching anything else. Day totals
+# reset at midnight, month totals on the 1st: both release automatically.
+# On startup today.tsv is seeded from daily.tsv's row for today, so a reboot
+# does not lose the already-flashed part of the day (and monthly sums built
+# from daily.tsv stay exact).
 # Test hooks: APMAN_ONCE=1 (one sample, no loop), APMAN_RUN_DIR, APMAN_DAILY_FILE
 
 RUN=${APMAN_RUN_DIR:-/tmp/apman}
@@ -24,6 +33,17 @@ for f in state.tsv today.tsv rates.tsv unknown.tsv wifi.tsv; do
 	[ -f "$RUN/$f" ] || : > "$RUN/$f"
 done
 [ -f "$DAILY" ] || : > "$DAILY"
+
+# fresh boot: /tmp was wiped, so today's running totals restart from the
+# last flash snapshot instead of from zero (daily.tsv keeps today's row)
+seed_today() {
+	[ -s "$RUN/today.tsv" ] && return 0
+	[ -s "$DAILY" ] || return 0
+	local d
+	d=$(date +%Y-%m-%d)
+	awk -F'\t' -v OFS='\t' -v d="$d" '$1 == d' "$DAILY" > "$RUN/today.tsv"
+}
+seed_today
 
 read_setting() {
 	local v
@@ -75,7 +95,7 @@ unknown_snapshot() {
 dhcp_names() {
 	# mac -> hostname from dnsmasq leases; dumb AP may relay these, may be absent
 	# columns: expiry mac ip hostname <client-id>
-	awk 'NF >= 4 { mac = tolower($2); gsub(/[^0-9a-f:]/, "", mac); if (mac != "") print mac "	" $4 }' \
+	awk 'NF >= 4 { mac = tolower($2); gsub(/[^0-9a-f:]/, "", mac); if (mac != "") print mac "\t" $4 }' \
 		/tmp/dhcp.leases 2>/dev/null
 }
 
@@ -88,10 +108,57 @@ wifi_clients() {
 
 put() { cat > "$1.tmp" && mv "$1.tmp" "$1"; }
 
+# ---------- usage caps: day/month totals + over-quota MAC list ----------
+# writes $RUN/qsums.tsv (id \t day_bytes \t month_bytes) and rebuilds
+# $RUN/quota.mac; apman-apply is re-run only when that list changes
+quota_step() {
+	local date=$1 month=$2 id mac a b c d2 e f2 g h dm mm line du mu over
+	[ -f "$DEVS" ] || return 0
+
+	awk -F'\t' -v OFS='\t' -v d="$date" -v m="$month" '
+		FILENAME == ARGV[1] {
+			if (index($1, m) == 1) mon[$2] += $3 + $4
+			if ($1 == d) day[$2] += $3 + $4
+			ids[$2] = 1
+			next
+		}
+		$1 == d { next }
+		index($1, m) == 1 { mon[$2] += $3 + $4; ids[$2] = 1 }
+		END { for (i in ids) printf "%s\t%d\t%d\n", i, day[i], mon[i] }
+	' "$RUN/today.tsv" "$DAILY" > "$RUN/qsums.tsv"
+
+	: > "$RUN/quota.mac.new"
+	while IFS='	' read -r id mac a b c d2 e f2 g dm mm; do
+		[ -n "$id" ] || continue
+		dm=$(int_or "$dm" 0); mm=$(int_or "$mm" 0)
+		[ "$dm" -gt 0 ] || [ "$mm" -gt 0 ] || continue
+		line=$(awk -F'\t' -v i="$id" '$1 == i { print $2 " " $3; exit }' "$RUN/qsums.tsv")
+		du=${line%% *}; mu=${line##* }
+		du=$(int_or "$du" 0); mu=$(int_or "$mu" 0)
+		over=0
+		[ "$dm" -gt 0 ] && [ "$du" -ge $((dm * 1048576)) ] && over=1
+		[ "$mm" -gt 0 ] && [ "$mu" -ge $((mm * 1048576)) ] && over=1
+		[ "$over" = 1 ] && printf '%s\n' "$mac" >> "$RUN/quota.mac.new"
+	done < "$DEVS"
+
+	if [ -f "$RUN/quota.mac" ]; then
+		if cmp -s "$RUN/quota.mac.new" "$RUN/quota.mac"; then
+			rm -f "$RUN/quota.mac.new"
+		else
+			mv "$RUN/quota.mac.new" "$RUN/quota.mac"
+			/usr/sbin/apman-apply
+		fi
+	else
+		mv "$RUN/quota.mac.new" "$RUN/quota.mac"
+		[ -s "$RUN/quota.mac" ] && /usr/sbin/apman-apply
+	fi
+}
+
 # ---------- one sampling step (APMAN_ONCE=1 runs exactly this and exits) ----------
 sample_step() {
-	local date now interval cleared delta snapmin histdays lastsnap keepfrom
+	local date now interval cleared delta snapmin histdays keepdays lastsnap keepfrom month
 	date=$(date +%Y-%m-%d)
+	month=${date%-*}
 	now=$(date +%s)
 	interval=$(int_or "$(uci -q get apman.global.interval)" 10)
 	[ "$interval" -lt 2 ] && interval=2
@@ -104,7 +171,7 @@ sample_step() {
 
 	# expired pauses -> clear + reapply
 	cleared=0
-	while IFS='	' read -r id mac down up lim block pause alias sec; do
+	while IFS='	' read -r id mac down up lim block pause alias sec dm mm; do
 		[ -n "$pause" ] || continue
 		[ "$alias" = - ] && alias=
 		[ "$pause" -gt 0 ] 2>/dev/null || continue
@@ -147,15 +214,19 @@ sample_step() {
 	# rows must reach daily.tsv first (midnight rollover)
 	snapmin=$(int_or "$(uci -q get apman.global.snapshot_minutes)" 10)
 	histdays=$(int_or "$(uci -q get apman.global.history_days)" 30)
+	# monthly usage caps are summed from daily.tsv: always retain a full
+	# 31-day window even when the display setting asks for fewer days
+	keepdays=$histdays
+	[ "$keepdays" -lt 31 ] && keepdays=31
 	lastsnap=$(int_or "$(cat "$RUN/lastsnap" 2>/dev/null)" 0)
-	if [ -s "$RUN/today.tsv" ] && awk -F'	' -v d="$date" '$1 != d { stale = 1 } END { exit !stale }' "$RUN/today.tsv"; then
+	if [ -s "$RUN/today.tsv" ] && awk -F'\t' -v d="$date" '$1 != d { stale = 1 } END { exit !stale }' "$RUN/today.tsv"; then
 		lastsnap=0
 	fi
 	if [ $((now - lastsnap)) -ge $((snapmin * 60)) ]; then
-		keepfrom=$(date -d "@$((now - (histdays - 1) * 86400))" +%Y-%m-%d 2>/dev/null)
+		keepfrom=$(date -d "@$((now - (keepdays - 1) * 86400))" +%Y-%m-%d 2>/dev/null)
 		[ -n "$keepfrom" ] || keepfrom=0000-00-00
 		{
-			awk -F'	' -v OFS='	' -v d="$date" -v k="$keepfrom" '$1 != d && $1 >= k' "$DAILY"
+			awk -F'\t' -v OFS='\t' -v d="$date" -v k="$keepfrom" '$1 != d && $1 >= k' "$DAILY"
 			cat "$RUN/today.tsv"
 		} | sort | put "$DAILY"
 		date +%s > "$RUN/lastsnap.tmp" && mv "$RUN/lastsnap.tmp" "$RUN/lastsnap"
@@ -165,7 +236,7 @@ sample_step() {
 	# carry forward only rows already dated today: yesterday's totals live in
 	# daily.tsv now and must not leak into the new day's counter
 	delta=$(cat "$RUN/.delta")
-	awk -F'	' -v OFS='	' -v date="$date" -v delta="$delta" '
+	awk -F'\t' -v OFS='\t' -v date="$date" -v delta="$delta" '
 		BEGIN {
 			n = split(delta, L, "\n")
 			for (i = 1; i <= n; i++) {
@@ -174,14 +245,18 @@ sample_step() {
 			}
 		}
 		$1 == date { t[$2] = $3 + 0; td[$2] = $4 + 0; ids[$2] = 1 }
-		END { for (i in ids) printf "%s	%s	%d	%d\n", date, i, du[i] + t[i], dd[i] + td[i] }
+		END { for (i in ids) printf "%s\t%s\t%d\t%d\n", date, i, du[i] + t[i], dd[i] + td[i] }
 	' "$RUN/today.tsv" | put "$RUN/today.tsv"
+
+	# usage caps: recompute totals, refresh the over-quota list, re-apply
+	# nft only when membership changed (see quota_step)
+	quota_step "$date" "$month"
 
 	# unknown devices; carry last_change while totals unchanged.
 	# set counters restart after each apman-apply (table delete+recreate):
 	# when a total shrinks, treat the new value as post-reset delta
 	unknown_snapshot | sort > "$RUN/.unk"
-	awk -F'	' -v OFS='	' -v now="$now" '
+	awk -F'\t' -v OFS='\t' -v now="$now" '
 		FILENAME == ARGV[1] {
 			last[$1] = $4 + 0; tot[$1] = ($2 + 0) + ($3 + 0)
 			prevu[$1] = $2 + 0; prevd[$1] = $3 + 0; next
@@ -192,7 +267,7 @@ sample_step() {
 			prevu[m] = u; prevd[m] = d
 			t = u + d
 			lc = (!(m in last)) ? now : (t != tot[m] ? now : last[m])
-			printf "%s	%d	%d	%d\n", m, u, d, lc
+			printf "%s\t%d\t%d\t%d\n", m, u, d, lc
 		}
 	' "$RUN/unknown.tsv" "$RUN/.unk" | put "$RUN/unknown.tsv"
 
@@ -208,9 +283,9 @@ build_status() {
 
 	json_init
 	json_add_object devices
-	while IFS='	' read -r id mac down up lim block pause alias sec; do
+	while IFS='	' read -r id mac down up lim block pause alias sec dm mm; do
 		[ -n "$id" ] || continue
-		local r bps_u bps_d lastc t_up t_dn state
+		local r bps_u bps_d lastc t_up t_dn state mu over
 		r=$(awk -F'\t' -v id="$id" '$1==id {print $2 " " $3 " " $5}' "$RUN/rates.tsv")
 		bps_u=${r%% *}; r=${r#* }
 		bps_d=${r%% *}; r=${r#* }
@@ -219,11 +294,16 @@ build_status() {
 		t_up=$(awk -F'\t' -v id="$id" '$2==id {print $3}' "$RUN/today.tsv")
 		t_dn=$(awk -F'\t' -v id="$id" '$2==id {print $4}' "$RUN/today.tsv")
 		t_up=$(int_or "$t_up" 0); t_dn=$(int_or "$t_dn" 0)
+		mu=$(awk -F'\t' -v id="$id" '$1==id {print $3; exit}' "$RUN/qsums.tsv" 2>/dev/null)
+		mu=$(int_or "$mu" 0)
+		over=0
+		grep -qix "$mac" "$RUN/quota.mac" 2>/dev/null && over=1
 		state=idle
 		[ "$block" = 1 ] && state=blocked
 		if [ -n "$pause" ] && [ "$pause" -gt "$now" ] 2>/dev/null; then
 			state=paused
 		fi
+		[ "$state" = idle ] && [ "$over" = 1 ] && state=capped
 		if [ "$state" = idle ]; then
 			if grep -qix "$mac" "$RUN/wifi.tsv" 2>/dev/null; then
 				state=online
@@ -245,6 +325,10 @@ build_status() {
 		json_add_int dn_bps "$bps_d"
 		json_add_int today_up "$t_up"
 		json_add_int today_dn "$t_dn"
+		json_add_int used_month "$mu"
+		json_add_int quota_daily_mb "$(int_or "$dm" 0)"
+		json_add_int quota_monthly_mb "$(int_or "$mm" 0)"
+		json_add_int overquota "$over"
 		json_close_object
 	done < "$DEVS"
 	json_close_object

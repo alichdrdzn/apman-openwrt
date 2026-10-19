@@ -8,7 +8,8 @@
 var callStatus   = new rpc.declare({ object: 'apman', method: 'status',   expect: {} });
 var callHistory  = new rpc.declare({ object: 'apman', method: 'history',  expect: {} });
 var callSave     = new rpc.declare({ object: 'apman', method: 'save',
-	params: [ 'mac', 'alias', 'down_kbps', 'up_kbps', 'limit_enabled', 'block' ], expect: {} });
+	params: [ 'mac', 'alias', 'down_kbps', 'up_kbps', 'limit_enabled', 'block',
+	'quota_daily_mb', 'quota_monthly_mb' ], expect: {} });
 var callPause    = new rpc.declare({ object: 'apman', method: 'pause',
 	params: [ 'mac', 'minutes' ], expect: {} });
 var callUnblock  = new rpc.declare({ object: 'apman', method: 'unblock',
@@ -41,6 +42,8 @@ var css = [
 	'.apm-chip--idle{background:rgba(100,116,139,.18);color:var(--apm-idle)}',
 	'.apm-chip--paused{background:rgba(251,191,36,.15);color:var(--apm-pause)}',
 	'.apm-chip--blocked{background:rgba(248,113,113,.15);color:var(--apm-block)}',
+	'.apm-chip--capped{background:rgba(251,146,60,.16);color:#fb923c}',
+	'.apm-cap.apm-over b{color:var(--apm-block)}',
 	'.apm-meta{color:var(--apm-mut);font-size:11.5px;word-break:break-all}',
 	'.apm-speeds{display:grid;grid-template-columns:1fr 1fr;gap:8px}',
 	'.apm-speed{background:rgba(255,255,255,.03);border:1px solid var(--apm-line);',
@@ -193,7 +196,7 @@ return view.extend({
 		for (var i = 0; i < ids.length; i++) {
 			var d = devs[ids[i]];
 			if (d.state === 'online' || d.state === 'active') online++;
-			if (d.block || (d.pause_until > (st.ts || 0))) off++;
+			if (d.block || (d.pause_until > (st.ts || 0)) || d.overquota) off++;
 			dn += Number(d.today_dn) || 0;
 			up += Number(d.today_up) || 0;
 		}
@@ -205,7 +208,7 @@ return view.extend({
 		dom.content(this.summaryEl, [
 			mk('', String(ids.length), _('Managed devices')),
 			mk('apm-dn-c', String(online), _('Online now')),
-			mk(off ? 'apm-up-c' : '', String(off), _('Blocked or paused')),
+			mk(off ? 'apm-up-c' : '', String(off), _('Blocked, paused or capped')),
 			mk('apm-dn-c', fmtBytes(dn), _('Downloaded today')),
 			mk('apm-up-c', fmtBytes(up), _('Uploaded today'))
 		]);
@@ -226,6 +229,20 @@ return view.extend({
 		var tuB = E('b', { 'class': 'apm-up-c' }, fmtBytes(d.today_up));
 		var meta = E('div', { 'class': 'apm-meta' },
 			d.mac + (d.ip ? '  ·  ' + d.ip : '') + (paused ? '  ·  ' + _('paused ') + pauseLeft(d.pause_until, now) : ''));
+
+		var dayCap = Number(d.quota_daily_mb) || 0;
+		var monCap = Number(d.quota_monthly_mb) || 0;
+		var quotaRow = '';
+		if (dayCap || monCap) {
+			var qp = [];
+			if (dayCap) qp.push(fmtBytes((Number(d.today_up) || 0) + (Number(d.today_dn) || 0)) +
+				' / ' + fmtBytes(dayCap * 1048576) + ' ' + _('today'));
+			if (monCap) qp.push(fmtBytes(d.used_month) + ' / ' + fmtBytes(monCap * 1048576) + ' ' + _('this month'));
+			quotaRow = E('div', { 'class': 'apm-cap' + (d.overquota ? ' apm-over' : '') }, [
+				_('Data: '), E('b', {}, qp.join('  ·  ')),
+				d.overquota ? E('span', {}, '  ·  ' + _('over cap: wifi paused until reset')) : ''
+			]);
+		}
 
 		var btnPause = E('button', { 'class': 'apm-btn ' + (paused ? 'apm-btn--go' : 'apm-btn--warn'),
 			'click': function () { if (paused) self.doPause(d.mac, 0, btnPause); else self.openPause(d.mac, btnPause); } },
@@ -253,6 +270,7 @@ return view.extend({
 				E('span', {}, [ _('Today '), tdB ]),
 				E('span', {}, [ _('↑ '), tuB ])
 			]),
+			quotaRow,
 			E('div', { 'class': 'apm-cap' }, [
 				_('Cap: '),
 				E('b', {}, d.limit_enabled ? (dnC ? '↓ ' + dnC : 'no ↓') : _('unlimited')),
@@ -267,7 +285,7 @@ return view.extend({
 		var self = this, devs = (this.status && this.status.devices) || {};
 		var ids = Object.keys(devs);
 		ids.sort(function (a, b) {
-			var ra = { online: 0, active: 1, idle: 2, paused: 3, blocked: 4 };
+			var ra = { online: 0, active: 1, idle: 2, paused: 3, blocked: 4, capped: 4 };
 			var rank = function (d) {
 				if (d.block || d.pause_until > ((self.status && self.status.ts) || 0)) return 4;
 				return ra[d.state] != null ? ra[d.state] : 3;
@@ -507,14 +525,14 @@ return view.extend({
 						placeholder: _('e.g. Living room TV') }) ])
 			]),
 			E('div', { 'class': 'cbi-value' }, [
-				E('label', { 'class': 'cbi-value-title', 'for': 'apm-dn' }, _('Download cap (Mbps)')),
+				E('label', { 'class': 'cbi-value-title', 'for': 'apm-dn' }, _('Download cap (Mbps, wifi only)')),
 				E('div', { 'class': 'cbi-value-field' }, [
 					E('input', { 'type': 'number', 'id': 'apm-dn', 'min': '0', 'step': '0.5',
 						'value': d.down_kbps ? (d.down_kbps / 1000) : '' ,
 						placeholder: _('0 = unlimited') }) ])
 			]),
 			E('div', { 'class': 'cbi-value' }, [
-				E('label', { 'class': 'cbi-value-title', 'for': 'apm-up' }, _('Upload cap (Mbps)')),
+				E('label', { 'class': 'cbi-value-title', 'for': 'apm-up' }, _('Upload cap (Mbps, wifi only)')),
 				E('div', { 'class': 'cbi-value-field' }, [
 					E('input', { 'type': 'number', 'id': 'apm-up', 'min': '0', 'step': '0.5',
 						'value': d.up_kbps ? (d.up_kbps / 1000) : '',
@@ -526,18 +544,36 @@ return view.extend({
 					E('input', { 'type': 'checkbox', 'id': 'apm-lim',
 						checked: d.limit_enabled ? 'checked' : null }) ])
 			]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title', 'for': 'apm-qd' }, _('Daily wifi data cap (MB)')),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', { 'type': 'number', 'id': 'apm-qd', 'min': '0', 'step': '100',
+						'value': d.quota_daily_mb || '', placeholder: _('0 = unlimited') }) ])
+			]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title', 'for': 'apm-qm' }, _('Monthly wifi data cap (MB)')),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', { 'type': 'number', 'id': 'apm-qm', 'min': '0', 'step': '1000',
+						'value': d.quota_monthly_mb || '', placeholder: _('0 = unlimited') }) ])
+			]),
 			E('div', { 'class': 'apm-inline', style: 'margin-top:8px' }, [
 				E('button', { 'class': 'apm-btn apm-btn--go', 'click': function () {
 					var mbps = function (x) {
 						var v = parseFloat(document.getElementById(x).value);
 						return (v > 0) ? Math.round(v * 1000) : 0;
 					};
+					var mib = function (x) {
+						var v = parseInt(document.getElementById(x).value, 10);
+						return (v > 0) ? v : 0;
+					};
 					var payload = {
 						mac: d.mac,
 						alias: document.getElementById('apm-alias').value.trim(),
 						down_kbps: mbps('apm-dn'),
 						up_kbps: mbps('apm-up'),
-						limit_enabled: document.getElementById('apm-lim').checked ? 1 : 0
+						limit_enabled: document.getElementById('apm-lim').checked ? 1 : 0,
+						quota_daily_mb: mib('apm-qd'),
+						quota_monthly_mb: mib('apm-qm')
 					};
 					ui.hideModal();
 					callSave(payload).then(function () { return self.flush(); },

@@ -9,7 +9,7 @@ Copy the package to the router, then (as root):
 
 ```sh
 apk add kmod-nft-bridge
-apk add /tmp/luci-app-apman-1.0.0-r2.apk
+apk add /tmp/luci-app-apman-1.0.0-r3.apk
 /etc/init.d/apman enable
 /etc/init.d/apman start
 ```
@@ -35,7 +35,10 @@ Size: package 17KB compressed, ~53KB installed, total footprint ~70KB.
 - **Devices**: one card per adopted device with:
   - live download/upload speed (updates every few seconds),
   - today's usage,
-  - its download and upload cap,
+  - its download and upload cap (wifi only),
+  - daily and monthly usage caps in MB (wifi only, 0 = off): the
+    device is cut off when it crosses the cap and released again when
+    the day or the month rolls over,
   - *Pause* (15 min / 1 h / 4 h / 24 h / custom): traffic drops while
     paused, the device recovers by itself when the time is up,
   - *Block* / *Unblock*: full block, wired and wireless,
@@ -67,24 +70,38 @@ uci and starts sampling again.
 
 Rules are installed in the nftables **bridge** family on `br-lan`:
 
-- chain order: blocking -> discovery -> rate limiting -> accounting, so
-  capped traffic never counts toward usage;
+- wifi port set: bridge ports whose netdev has a `phy80211` radio;
+  every speed cap, usage cap and accounting rule is scoped to that set,
+  so wired traffic passes untouched;
+- upload rules run on the bridge prerouting hook (`iifname` wifi set),
+  download rules on the bridge forward hook (`oifname` wifi set);
+- chain order: blocking -> discovery -> rate limiting -> usage cap drop
+  -> accounting, so capped or over-quota traffic never counts toward
+  usage;
+- blocking and pause are deliberately not wifi-only: they cut both
+  wired and wifi for the device;
 - rate limiting uses `limit rate over ... drop` (no tc, no ifb);
-- accounting counts every frame on the bridge, skipping multicast and
-  broadcast; counters survive rule regeneration;
+- the collector compares daily and monthly sums (today's tmpfs sample
+  plus the flash history, kept at least 31 days) against each device's
+  caps and writes over-quota MACs into an nft set, releasing them at
+  the day/month rollover or when usage drops below the cap;
+- accounting counts every frame on the wifi ports, skipping multicast
+  and broadcast; counters survive rule regeneration;
 - MAC sets, counters and dynamic discovery are regenerated as one atomic
   nftables transaction (delete table + create) to avoid EBUSY and stale
   entries.
 
-Nothing in it cares which port carries the uplink: wired clients, wifi
-clients, cable backhaul or wifi extender all hit the same chains.
+The uplink side never matters: cable or wifi extender, the same
+uplink chains apply. Wired clients are simply outside the wifi set,
+so caps and usage accounting never touch them.
 
 ## ubus API (for scripting)
 
 ```
 ubus call apman status        # devices, unknown devices, settings, dhcp names
 ubus call apman history       # {"days":{"YYYY-MM-DD":{"<id>":[up,down]}}}
-ubus call apman save          # mac, alias, down_kbps, up_kbps, limit_enabled, block
+ubus call apman save          # mac, alias, down_kbps, up_kbps, limit_enabled, block,
+                              # quota_daily_mb, quota_monthly_mb (omit a key to keep it)
 ubus call apman pause         # mac, minutes (0 clears)
 ubus call apman unblock       # mac
 ubus call apman forget        # mac

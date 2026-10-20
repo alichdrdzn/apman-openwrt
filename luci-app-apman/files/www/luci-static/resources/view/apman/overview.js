@@ -5,24 +5,25 @@
 'require poll';
 'require rpc';
 
-var callStatus   = new rpc.declare({ object: 'apman', method: 'status',   expect: {} });
-var callHistory  = new rpc.declare({ object: 'apman', method: 'history',  expect: {} });
-var callSave     = new rpc.declare({ object: 'apman', method: 'save',
-	params: [ 'mac', 'alias', 'down_kbps', 'up_kbps', 'limit_enabled', 'block',
-	'quota_daily_mb', 'quota_monthly_mb' ], expect: {} });
-var callPause    = new rpc.declare({ object: 'apman', method: 'pause',
-	params: [ 'mac', 'minutes' ], expect: {} });
-var callUnblock  = new rpc.declare({ object: 'apman', method: 'unblock',
-	params: [ 'mac' ], expect: {} });
-var callForget   = new rpc.declare({ object: 'apman', method: 'forget',
-	params: [ 'mac' ], expect: {} });
-var callAdopt    = new rpc.declare({ object: 'apman', method: 'adopt',
-	params: [ 'mac', 'alias' ], expect: {} });
-var callIgnore   = new rpc.declare({ object: 'apman', method: 'ignore',
-	params: [ 'mac' ], expect: {} });
-var callSettings = new rpc.declare({ object: 'apman', method: 'settings',
-	params: [ 'enabled', 'interval', 'history_days', 'snapshot_minutes', 'ignored_macs' ], expect: {} });
-var callApply    = new rpc.declare({ object: 'apman', method: 'apply', expect: {} });
+var callStatus   = rpc.declare({ object: 'apman', method: 'status',   expect: {} });
+var callHistory  = rpc.declare({ object: 'apman', method: 'history',  expect: {} });
+var callSave     = rpc.declare({ object: 'apman', method: 'save', expect: {},
+	params: { mac: '', alias: '', down_kbps: 0, up_kbps: 0, limit_enabled: 0,
+	block: 0, quota_daily_mb: 0, quota_monthly_mb: 0 } });
+var callPause    = rpc.declare({ object: 'apman', method: 'pause',
+	params: { mac: '', minutes: 0 }, expect: {} });
+var callUnblock  = rpc.declare({ object: 'apman', method: 'unblock',
+	params: { mac: '' }, expect: {} });
+var callForget   = rpc.declare({ object: 'apman', method: 'forget',
+	params: { mac: '' }, expect: {} });
+var callAdopt    = rpc.declare({ object: 'apman', method: 'adopt',
+	params: { mac: '', alias: '' }, expect: {} });
+var callIgnore   = rpc.declare({ object: 'apman', method: 'ignore',
+	params: { mac: '' }, expect: {} });
+var callSettings = rpc.declare({ object: 'apman', method: 'settings',
+	params: { enabled: 0, interval: 0, history_days: 0, snapshot_minutes: 0,
+	ignored_macs: '' }, expect: {} });
+var callApply    = rpc.declare({ object: 'apman', method: 'apply', expect: {} });
 
 var css = [
 	'.apm-root{--apm-bg:#0e1117;--apm-card:#161b26;--apm-card2:#1b2230;--apm-line:#242d3e;',
@@ -391,12 +392,13 @@ return view.extend({
 		var cols = rows.map(function (r) {
 			var hd = Math.round((r.dn / max) * 150), hu = Math.round((r.up / max) * 150);
 			var tip = r.d + '  ↓ ' + fmtBytes(r.dn) + '  ↑ ' + fmtBytes(r.up);
-			var bar = [ hu ? E('div', { 'class': 'apm-bar-up', style: 'height:' + hu + 'px' }) : '',
-				hd ? E('div', { 'class': 'apm-bar-dn', style: 'height:' + hd + 'px' }) : '' ];
-			return E('div', { 'class': 'apm-col', title: tip }, [
-				E('div', { style: 'flex:1' }), bar,
-				E('div', { 'class': 'apm-xlab' }, r.d.slice(5))
-			]);
+			var bar = [];
+			if (hu) bar.push(E('div', { 'class': 'apm-bar-up', style: 'height:' + hu + 'px' }));
+			if (hd) bar.push(E('div', { 'class': 'apm-bar-dn', style: 'height:' + hd + 'px' }));
+			return E('div', { 'class': 'apm-col', title: tip },
+				[ E('div', { style: 'flex:1' }) ].concat(bar).concat([
+					E('div', { 'class': 'apm-xlab' }, r.d.slice(5))
+				]));
 		});
 		dom.content(this.chartEl, cols);
 	},

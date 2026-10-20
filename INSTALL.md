@@ -9,7 +9,7 @@ Copy the package to the router, then (as root):
 
 ```sh
 apk add kmod-nft-bridge
-apk add /tmp/luci-app-apman-1.0.0-r4.apk
+apk add /tmp/luci-app-apman-1.0.0-r5.apk
 /etc/init.d/apman enable
 /etc/init.d/apman start
 ```

@@ -24,7 +24,7 @@ may be a cable or a wifi extender, that never matters. Footprint:
 | Path | What it is |
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
-| `dist/luci-app-apman-1.0.0-r4.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
+| `dist/luci-app-apman-1.0.0-r5.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
 | `FLASHING.md` | Exact flashing steps: Windows and Linux VM with NAT |
 | `INSTALL.md` | Package install, usage and configuration reference |
 | `test/e2e-harness.sh` | Host E2E harness: hwsim wifi + wired fixture, 38 checks |
@@ -35,10 +35,10 @@ may be a cable or a wifi extender, that never matters. Footprint:
 2. Install the package:
 
    ```sh
-   scp -O dist/luci-app-apman-1.0.0-r4.apk root@192.168.1.1:/tmp/
+   scp -O dist/luci-app-apman-1.0.0-r5.apk root@192.168.1.1:/tmp/
    ssh root@192.168.1.1
    apk add kmod-nft-bridge
-   apk add /tmp/luci-app-apman-1.0.0-r4.apk
+   apk add /tmp/luci-app-apman-1.0.0-r5.apk
    /etc/init.d/apman enable
    /etc/init.d/apman start
    ```
@@ -65,7 +65,7 @@ make defconfig
 make package/luci-app-apman/compile
 
 # 4. Result
-ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r4.apk
+ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r5.apk
 ```
 
 Host prerequisite: `apt-get install libncurses-dev`.

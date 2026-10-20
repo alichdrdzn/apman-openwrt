@@ -57,8 +57,7 @@ set it in Settings -> LAN bridge (or `uci set apman.global.bridge=...`).
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
 | `dist/luci-app-apman-1.0.0-r11.apk` | Prebuilt package (`noarch`, OpenWrt 25.12) |
-| `INSTALL.md` | Package install, usage and configuration reference |
-| `test/e2e-harness.sh` | Host E2E harness: hwsim wifi + wired fixture, 75 checks |
+| `LICENSE` | MIT |
 
 ## Quick start
 

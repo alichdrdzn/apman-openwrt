@@ -28,15 +28,9 @@ repository, which is why no download or file copy is needed.
 If the router has no internet access, download
 `kmod-nft-bridge-<version>.apk` for your target from
 `https://downloads.openwrt.org/releases/25.12.6/targets/<target>/<subtarget>/kmods/<kernel-hash>/`
-and upload it with the same **System -> Software -> Upload Package**
-button. Signed packages install from the interface without any flag.
-
-From the command line the equivalent is:
-
-```sh
-apk update
-apk add kmod-nft-bridge
-```
+on a PC, then use the same **System -> Software -> Upload Package**
+button to install it. It is a signed package, so the interface installs
+it without any extra flag.
 
 ### 2. The package
 
@@ -46,9 +40,9 @@ way to install a self-built or externally downloaded `.apk`, see
 <https://openwrt.org/docs/guide-user/additional-software/apk>.
 
 ```sh
-scp -O luci-app-apman-1.0.0-r10.apk root@192.168.1.1:/tmp/
+scp -O luci-app-apman-1.0.0-r11.apk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1
-apk add --allow-untrusted /tmp/luci-app-apman-1.0.0-r10.apk
+apk add --allow-untrusted /tmp/luci-app-apman-1.0.0-r11.apk
 ```
 
 Do not use the LuCI upload button for this file: in 25.12 the package
@@ -163,6 +157,13 @@ LAN bridge (`br-lan` unless changed):
 The uplink side never matters: cable or wifi extender, the same
 uplink chains apply. Wired clients are simply outside the wifi set,
 so caps and usage accounting never touch them.
+
+If the uplink is itself wifi, it still stays out of the set. A routed
+station interface in the `wan` zone is not a bridge port at all. A
+bridged mesh or WDS backhaul would be one, so each bridge port is
+checked with `iw dev <if> info` and `managed` (station) ports are
+excluded: a station joins another network, it does not serve clients.
+Mesh and ad-hoc ports stay in, since a mesh AP does serve clients.
 
 ## ubus API (for scripting)
 

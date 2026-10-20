@@ -87,6 +87,16 @@ emit_device() {
 }
 
 # ---------- wifi bridge ports (have a phy80211 parent) ----------
+# Only AP-side ports are client ports. A wifi UPLINK can also be a bridge port
+# (mesh or WDS joined into the LAN, i.e. a wireless backhaul instead of a
+# cable): it carries phy80211 too, but its frames are the whole LAN's traffic,
+# not one client's. Treating it as a client port would rate-limit and account
+# every client's traffic against the uplink, and would let the whitelist guard
+# drop the traffic of devices that are not in the allowed set.
+wifi_port_type() { # $1 = interface -> prints iw type, empty if unknown
+	iw dev "$1" info 2>/dev/null | awk '/^[ 	]*type /{print $2; exit}'
+}
+
 collect_wifi_ports() {
 	WIFI=$RUN/wifiports.tmp
 	: > "$WIFI"
@@ -98,7 +108,18 @@ collect_wifi_ports() {
 			# brif/<port> symlinks to the port's brport dir (not the
 			# netdev dir), so test phy80211 via /sys/class/net/<portname>
 			n=$(basename "$p")
-			[ -e "/sys/class/net/$n/phy80211" ] && echo "$n" >> "$WIFI"
+			[ -e "/sys/class/net/$n/phy80211" ] || continue
+			# Only a managed/STA interface is certainly an uplink: it joins
+			# someone else's network instead of serving clients. mesh and
+			# ad-hoc can be either side (a mesh AP serves clients), so they
+			# are kept: excluding them would silently disable policing on a
+			# mesh AP, which is worse than the risk of an unusual bridged
+			# backhaul being treated as a client port.
+			case "$(wifi_port_type "$n")" in
+				managed|station|monitor)
+					continue ;; # uplink side, not a client port
+			esac
+			echo "$n" >> "$WIFI"
 		done
 	fi
 	sort -u -o "$WIFI" "$WIFI"

@@ -56,6 +56,23 @@ Developed and tested on a Xiaomi Mi Router 4A Gigabit Edition (v1,
 target. If your device names its bridge something other than `br-lan`,
 set it in Settings -> LAN bridge (or `uci set apman.global.bridge=...`).
 
+### Uplink over wifi instead of a cable
+
+Yes, that works, and the uplink can be either shape:
+
+- **Routed (the usual one)**: a station interface joins the upstream
+  network and sits in the `wan` firewall zone. It is not a bridge port,
+  so it is never in the wifi port set and never gets policed or counted.
+- **Bridged backhaul**: a mesh or WDS link joined into the LAN bridge.
+  This one would look like a client port, so the package checks each
+  bridge port with `iw dev <if> info` and drops `managed` (station)
+  interfaces from the wifi port set: a station joins someone else's
+  network, it does not serve clients. Mesh and ad-hoc stay included,
+  because a mesh AP does serve clients.
+
+So laptops and phones on wifi get their caps, and the wireless backhaul
+carries them without being counted as one big device.
+
 Two honest limits:
 
 - Routed (non-bridge) wifi setups are not supported. If wifi clients
@@ -71,7 +88,7 @@ Two honest limits:
 | Path | What it is |
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
-| `dist/luci-app-apman-1.0.0-r10.apk` | Prebuilt package (`noarch`, OpenWrt 25.12) |
+| `dist/luci-app-apman-1.0.0-r11.apk` | Prebuilt package (`noarch`, OpenWrt 25.12) |
 | `INSTALL.md` | Package install, usage and configuration reference |
 | `test/e2e-harness.sh` | Host E2E harness: hwsim wifi + wired fixture, 75 checks |
 
@@ -83,17 +100,20 @@ Two honest limits:
    General install notes: <https://openwrt.org/docs/guide-user/installation/generic.flashing>.
 2. Copy the package to the router and install it:
 
-   ```sh
-   scp -O dist/luci-app-apman-1.0.0-r10.apk root@192.168.1.1:/tmp/
-   ssh root@192.168.1.1
-   apk add kmod-nft-bridge
-   apk add --allow-untrusted /tmp/luci-app-apman-1.0.0-r10.apk
-   ```
+   First the kernel module, from the interface: **System -> Software ->
+   Update lists**, filter `kmod-nft-bridge`, **Install**. It is signed,
+   so no flag and no file copy is needed.
 
-   `--allow-untrusted` is required because this package is not signed
-   with an OpenWrt release key. `kmod-nft-bridge` is signed, so
-   `apk add kmod-nft-bridge` needs no flag. Installing the kmod from
-   LuCI is covered in INSTALL.md.
+   Then the package itself. It is not signed with an OpenWrt release
+   key, and the interface cannot install unsigned packages (its upload
+   button never passes `--allow-untrusted`), so this one goes in over
+   the command line:
+
+   ```sh
+   scp -O dist/luci-app-apman-1.0.0-r11.apk root@192.168.1.1:/tmp/
+   ssh root@192.168.1.1
+   apk add --allow-untrusted /tmp/luci-app-apman-1.0.0-r11.apk
+   ```
 
 3. The post-install script enables and starts the service and reloads
    `rpcd`, so there is nothing else to do.
@@ -119,7 +139,7 @@ make defconfig
 make package/luci-app-apman/compile
 
 # 4. Result (arch is noarch, only the output folder is target-named)
-ls bin/packages/*/base/luci-app-apman-1.0.0-r10.apk
+ls bin/packages/*/base/luci-app-apman-1.0.0-r11.apk
 ```
 
 Host prerequisite: `apt-get install libncurses-dev`.

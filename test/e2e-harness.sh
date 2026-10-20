@@ -108,6 +108,7 @@ ip netns exec $NSW sh -c 'ip link set lo up; ip link set wlan1 down
 	ip route add default via 10.66.66.1'
 sleep 3
 
+BRIDGE_WIFI=wlan0
 W1MAC=$(ip netns exec $NSW cat /sys/class/net/wlan1/address 2>/dev/null | tr 'A-F' 'a-f')
 [ -n "$W1MAC" ] || { echo "ABORT: cannot read wlan1 MAC"; exit 1; }
 AID=$(echo "$W1MAC" | tr -d ':')
@@ -495,6 +496,47 @@ case "$DEPLINE" in
 	*) dep_bad=1 ;;
 esac
 chk "T13 depends on the nftables virtual, not one JSON variant ($DEPLINE)" $dep_bad
+
+# ---------- T14: wifi uplink (wireless backhaul) instead of a LAN cable ----------
+# Two uplink shapes exist and neither may be policed:
+#   routed:  a STA interface in the wan zone. Not a bridge port at all, so the
+#            wifi port set never contains it. Nothing to do.
+#   bridged: a backhaul joined into the LAN bridge. It is a phy80211 bridge
+#            port carrying the whole LAN's traffic, so treating it as a client
+#            port would rate-limit and account every client against it.
+# A managed/STA interface joins someone else's network, so it is never a client
+# port. mesh/ad-hoc are ambiguous (a mesh AP serves clients) and stay included.
+sed -n '/^wifi_port_type()/,/^}/p' "$REPO/usr/sbin/apman-apply" > "$RUN/wpt.sh"
+[ -s "$RUN/wpt.sh" ]
+chk "T14 wifi_port_type helper exists" $?
+mkdir -p "$RUN/fakebin"
+cat > "$RUN/fakebin/iw" <<'EOS'
+#!/bin/sh
+[ -n "$FAKE_IW_TYPE" ] && { printf 'Interface %s\n\ttype %s\n' "$3" "$FAKE_IW_TYPE"; exit 0; }
+exec /usr/sbin/iw "$@" 2>/dev/null
+EOS
+chmod +x "$RUN/fakebin/iw"
+T14T=$(PATH="$RUN/fakebin:$PATH" FAKE_IW_TYPE=managed \
+	sh -c ". '$RUN/wpt.sh'; wifi_port_type wlan0")
+[ "$T14T" = managed ]
+chk "T14 STA uplink type is readable ($T14T)" $?
+uci -q set apman.global.whitelist=1; uci -q commit apman
+# a STA-only bridge has no client ports at all
+PATH="$RUN/fakebin:$PATH" FAKE_IW_TYPE=managed APMAN_WIFI_PORTS= \
+	/usr/sbin/apman-apply >/dev/null 2>&1
+nft list set bridge apman wifports 2>/dev/null | grep -qi wlan0
+chk "T14 STA uplink excluded from the wifi port set (expect absent)" $((1 - $?))
+# an AP-side mesh must stay policed, since a mesh AP serves clients
+PATH="$RUN/fakebin:$PATH" FAKE_IW_TYPE=mesh APMAN_WIFI_PORTS= \
+	/usr/sbin/apman-apply >/dev/null 2>&1
+nft list set bridge apman wifports 2>/dev/null | grep -qi wlan0
+chk "T14 mesh AP port kept in the wifi port set" $?
+/usr/sbin/apman-apply >/dev/null 2>&1
+nft list set bridge apman wifports 2>/dev/null | grep -qi wlan0
+chk "T14 real fixture still polices its AP port" $?
+UP_INET=$(loss $NSW 10.99.99.9 100 20)
+[ "$UP_INET" -le 20 ]
+chk "T14 allowed client keeps the internet (loss ${UP_INET}%)" $?
 
 # ---------- summary ----------
 echo "=============================================="

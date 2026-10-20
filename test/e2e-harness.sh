@@ -308,6 +308,34 @@ chk "T10 counters preserved across re-apply ($C1 -> $C2)" $?
 [ "$(nft list tables | grep -c '^table bridge apman$')" = 1 ]
 chk "T10 single apman table after re-apply" $?
 
+# ---------- T11: unknown-device discovery end to end (regression) ----------
+# Three faults made the "Not managed" list permanently empty:
+#   1. parse_unk_set used 'nft --terse list set', and --terse omits elements
+#   2. it queried sets named unknown_u/unknown_d (real names: _up/_dn)
+#   3. an early '/}/' reset the line matcher, dropping single-line element lists
+# Assert the whole chain: unscoped discovery -> set -> parser -> status.json.
+UNKMAC=aa:aa:aa:aa:aa:03
+# the wired client's real interface inside NSL is lanethp; giving it a MAC
+# that is not in uci makes it an unmanaged device for discovery
+ip netns exec $NSL ip link set lanethp address $UNKMAC
+ip netns exec $NSL ping -c 5 -W1 -i 0.2 10.66.66.1 >/dev/null 2>&1
+nft list set bridge apman unknown_up 2>/dev/null | grep -qi "$UNKMAC"
+chk "T11 unmanaged MAC enters unknown_up set" $?
+APMAN_ONCE=1 /usr/sbin/apman-collect >"$RUN/collect-unk.log" 2>&1
+chk "T11 collect after unknown traffic (rc)" $?
+python3 - "$RUN/status.json" "$UNKMAC" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1])); mac = sys.argv[2]
+u = st.get('unknown') or {}
+sys.exit(0 if mac in u and (u[mac]['up'] + u[mac]['dn']) > 0 else 1)
+PY
+chk "T11 unknown device reaches status.json with bytes" $?
+grep -qi "^$UNKMAC" "$RUN/unknown.tsv" 2>/dev/null
+chk "T11 unknown device persisted to unknown.tsv" $?
+# the parser must survive the parser-vs-nft format boundary: no --terse on sets
+grep -q 'nft list set bridge apman' "$REPO/usr/sbin/apman-collect"
+chk "T11 collector reads sets without --terse" $?
+
 # ---------- summary ----------
 echo "=============================================="
 echo "PASS=$PASS FAIL=$FAIL"

@@ -56,7 +56,7 @@ set it in Settings -> LAN bridge (or `uci set apman.global.bridge=...`).
 | Path | What it is |
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
-| `dist/luci-app-apman-1.0.0-r11.apk` | Prebuilt package (`noarch`, OpenWrt 25.12) |
+| `dist/luci-app-apman-1.0.0-r12.apk` | Prebuilt package (`noarch`, OpenWrt 25.12) |
 | `LICENSE` | MIT |
 
 ## Quick start
@@ -75,9 +75,9 @@ set it in Settings -> LAN bridge (or `uci set apman.global.bridge=...`).
    the command line:
 
    ```sh
-   scp -O dist/luci-app-apman-1.0.0-r11.apk root@192.168.1.1:/tmp/
+   scp -O dist/luci-app-apman-1.0.0-r12.apk root@192.168.1.1:/tmp/
    ssh root@192.168.1.1
-   apk add --allow-untrusted /tmp/luci-app-apman-1.0.0-r11.apk
+   apk add --allow-untrusted /tmp/luci-app-apman-1.0.0-r12.apk
    ```
 
 3. The post-install script enables and starts the service and reloads
@@ -103,7 +103,7 @@ make defconfig
 make package/luci-app-apman/compile
 
 # 4. Result (arch is noarch, only the output folder is target-named)
-ls bin/packages/*/base/luci-app-apman-1.0.0-r11.apk
+ls bin/packages/*/base/luci-app-apman-1.0.0-r12.apk
 ```
 
 Host prerequisite: `apt-get install libncurses-dev`.

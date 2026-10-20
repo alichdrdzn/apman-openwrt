@@ -7,9 +7,7 @@ Per-device user management for an OpenWrt access point (bridge mode).
   automatically when the day or month rolls over
 - Pause (timed) and block, wired and wireless
 - Whitelist mode (default deny): only allowed devices reach the internet,
-  every other wifi device still joins and reaches the LAN. This is the
-  reliable answer to randomised MACs, since a new random MAC is a new
-  device and therefore gets no internet until it is allowed
+  every other wifi device still joins and reaches the LAN.
 - Live speeds per device
 - Persistent daily wifi traffic history
 - Dark LuCI dashboard: Services -> AP Manager
@@ -20,24 +18,11 @@ bridge ports (the bridge ports backed by a `phy80211` radio): wired
 clients are never rate-limited and their traffic is never counted.
 Block and pause still stop wired and wifi traffic alike.
 
-Whitelist mode keys on the **LAN prefixes the bridge carries**, not on
-an address range and not on the gateway. Every frame a wifi client
-sends either stays on the LAN (permitted) or leaves it (dropped); DHCP,
-ARP, EAPOL, IPv6 link-local and ICMPv6 neighbour discovery stay
-permitted so clients keep their address and stay associated. A
-bridge-mode AP has no default route, which is exactly why the guard
-does not need one. Only ingress on wifi bridge ports is matched, so
-wired clients are never affected. If the bridge has no IPv4 address the
-guard stays off rather than locking every wifi client out, and the
-collector retries once a minute until it engages. The uplink
-may be a cable or a wifi extender, that never matters. Footprint:
-~70KB (package 17KB compressed + 6.4KB `kmod-nft-bridge`).
-
 ## Which devices does it run on
 
 Any OpenWrt 25.12 or newer device that puts its wifi into a bridge. The
 package is `arch: noarch`: shell and JavaScript only, nothing compiled,
-so it is not tied to one router, one SoC or one instruction set.
+so it is not tied to one router.
 
 What it actually needs:
 
@@ -56,24 +41,7 @@ Developed and tested on a Xiaomi Mi Router 4A Gigabit Edition (v1,
 target. If your device names its bridge something other than `br-lan`,
 set it in Settings -> LAN bridge (or `uci set apman.global.bridge=...`).
 
-### Uplink over wifi instead of a cable
-
-Yes, that works, and the uplink can be either shape:
-
-- **Routed (the usual one)**: a station interface joins the upstream
-  network and sits in the `wan` firewall zone. It is not a bridge port,
-  so it is never in the wifi port set and never gets policed or counted.
-- **Bridged backhaul**: a mesh or WDS link joined into the LAN bridge.
-  This one would look like a client port, so the package checks each
-  bridge port with `iw dev <if> info` and drops `managed` (station)
-  interfaces from the wifi port set: a station joins someone else's
-  network, it does not serve clients. Mesh and ad-hoc stay included,
-  because a mesh AP does serve clients.
-
-So laptops and phones on wifi get their caps, and the wireless backhaul
-carries them without being counted as one big device.
-
-Two honest limits:
+### limits
 
 - Routed (non-bridge) wifi setups are not supported. If wifi clients
   sit on their own subnet behind the AP, the wifi ports are not bridge
@@ -81,7 +49,7 @@ Two honest limits:
 - The prebuilt `.apk` in `dist/` is `noarch` and installs on any target,
   but its dependency resolution needs `kmod-nft-bridge` for your own
   kernel. On a device without internet access, install that kmod from
-  your target's kmods folder first (see INSTALL.md).
+  your target's kmods folder first.
 
 ## Repository contents
 
@@ -95,9 +63,7 @@ Two honest limits:
 ## Quick start
 
 1. Flash OpenWrt on the router. Follow the official guide for your
-   device at <https://openwrt.org/toh/start>, and for this one in
-   particular <https://openwrt.org/toh/xiaomi/mi_router_4a_gigabit>.
-   General install notes: <https://openwrt.org/docs/guide-user/installation/generic.flashing>.
+   device at <https://openwrt.org/toh/start>.
 2. Copy the package to the router and install it:
 
    First the kernel module, from the interface: **System -> Software ->
@@ -119,7 +85,6 @@ Two honest limits:
    `rpcd`, so there is nothing else to do.
 4. Open LuCI -> Services -> AP Manager.
 
-Details and all rpc methods: [INSTALL.md](INSTALL.md).
 
 ## Building from source
 

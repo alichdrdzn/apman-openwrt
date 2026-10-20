@@ -9,7 +9,7 @@ Copy the package to the router, then (as root):
 
 ```sh
 apk add kmod-nft-bridge
-apk add /tmp/luci-app-apman-1.0.0-r3.apk
+apk add /tmp/luci-app-apman-1.0.0-r4.apk
 /etc/init.d/apman enable
 /etc/init.d/apman start
 ```
@@ -60,7 +60,7 @@ Size: package 17KB compressed, ~53KB installed, total footprint ~70KB.
 | `/usr/sbin/apman-apply` | uci -> nftables rules, atomic whole-table regeneration, counter preserving |
 | `/usr/sbin/apman-collect` | samples counters, computes speeds and usage, writes `/tmp/apman/status.json`, rolls usage into `/etc/apman/daily.tsv` |
 | `/usr/libexec/rpcd/apman` | ubus object `apman` (backend for the UI) |
-| `/usr/share/luci/view/apman/overview.js` | the dashboard view |
+| `/www/luci-static/resources/view/apman/overview.js` | the dashboard view (JS asset, served by uhttpd) |
 | `/etc/config/apman` | settings + one section per device (survives sysupgrades) |
 | `/etc/apman/daily.tsv` | daily usage history (survives sysupgrades) |
 

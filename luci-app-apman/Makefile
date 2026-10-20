@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-apman
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=Ali
@@ -61,8 +61,12 @@ define Package/luci-app-apman/install
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/luci-app-apman.json $(1)/usr/share/rpcd/acl.d/luci-app-apman.json
 
-	$(INSTALL_DIR) $(1)/usr/share/luci/view/apman
-	$(INSTALL_DATA) ./files/usr/share/luci/view/apman/overview.js $(1)/usr/share/luci/view/apman/overview.js
+	# LuCI JS views are web assets: they must land under /www so that
+	# /luci-static/resources/view/apman/overview.js resolves. Installing
+	# them to /usr/share/luci/view (legacy Lua .htm dir) makes the
+	# browser 404 with "HTTP error 404 while loading class file".
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/apman
+	$(INSTALL_DATA) ./files/www/luci-static/resources/view/apman/overview.js $(1)/www/luci-static/resources/view/apman/overview.js
 endef
 
 $(eval $(call BuildPackage,luci-app-apman))

@@ -16,25 +16,38 @@
 #   forward     lim_dl     prio -150  download rate limits, wifi egress only
 #   forward     quota_dl   prio -140  usage cap (daily/monthly), wifi only
 #   forward     acc_dn     prio -100  download counters, wifi egress only
+#   output      blockchain_out       drop traffic TO blocked/paused MACs
+#   output      discovery_out        count unknown MACs' downloads
 #   output      lim_dl_out prio -150  download rate limits, wifi egress only
 #   output      quota_dl_out prio -140 usage cap (daily/monthly), wifi only
 #   output      acc_dn_out prio -100 download counters, wifi egress only
 #
+# Two kinds of frame reach a wifi client, and they need DIFFERENT hooks:
+#   relayed : the bridge receives the frame on one port and sends it out of
+#             another (dumb AP: the uplink is itself a bridge port). Seen at
+#             bridge prerouting (ingress) and bridge forward (egress).
+#   routed  : the AP's own IP stack routes the frame (a router: WAN is a
+#             separate, non-bridge interface) and hands it to the bridge,
+#             which transmits it out of the wifi port. The frame is locally
+#             generated, so the bridge never "forwards" it and never sees it
+#             at prerouting. It is seen at bridge output (egress) only.
+#
+# Everything that matches a frame ADDRESSED TO a client therefore needs
+# both the forward and the output hook:
+#   - the download cap and the download counters: with only the forward
+#     hook a router's downloads were never limited and never counted.
+#   - the block: with only the prerouting daddr rule a blocked device
+#     still received inbound traffic on a router.
+#   - the unknown-device download counters: same reason.
+# The two hooks are mutually exclusive: a frame is either relayed or
+# generated locally, never both, so nothing is ever counted twice and the
+# per-device totals stay exact.
+#
 # Wifi-only scoping: limits and usage accounting match `iifname/oifname
 # @wifports`, where wifports = bridge ports carrying a phy80211 parent.
-# Upload is scoped at prerouting via iifname (ingress port known there).
-# Download needs the egress port, which is only known once the frame is on
-# its way out, and WHICH hook exposes it depends on how the client is served:
-#   forward : the bridge relays the frame (dumb AP: the uplink is itself a
-#             bridge port). Received on one port, sent out of another.
-#   output  : the AP's own IP stack routes the frame (a router: WAN is a
-#             separate, non-bridge interface) and hands it to the bridge,
-#             which transmits it out of the wifi port. Such a frame is
-#             locally generated, so the bridge never "forwards" it.
-# Both are needed: with only the forward hook a router's downloads are never
-# limited and never counted; with only the output hook a dumb AP's downloads
-# are never limited. A frame is either relayed or generated locally, never
-# both, so the two hooks never count the same bytes twice.
+# Upload is scoped at prerouting via iifname (ingress port known there),
+# so it works in both topologies. Download needs the egress port, which is
+# only known once the frame is on its way out.
 # Limiter -150 and quota -140 both precede accounting -100 in their hook,
 # so capped-away and quota-dropped bytes never count as usage.
 #
@@ -342,6 +355,15 @@ OUT "		type filter hook prerouting priority -300; policy accept;"
 OUT "		ether saddr @blocked drop"
 OUT "		ether daddr @blocked drop"
 OUT "	}"
+# The daddr rule above only catches frames the bridge relays. On a router a
+# download to the device is LOCALLY GENERATED and handed to the bridge, so
+# it never enters the bridge's prerouting hook and the block would not
+# stop it. The output hook is where that frame is finally transmitted, so
+# the block needs a rule there too.
+OUT "	chain blockchain_out {"
+OUT "		type filter hook output priority -300; policy accept;"
+OUT "		ether daddr @blocked drop"
+OUT "	}"
 
 # whitelist guard: unknown wifi MACs may talk to the LAN but not past the
 # gateway. Placed before discovery so blocked clients are not learned as new.
@@ -400,6 +422,16 @@ fi
 OUT "	chain discovery {"
 OUT "		type filter hook prerouting priority -250; policy accept;"
 OUT "		ether saddr != @nodisc add @unknown_up { ether saddr }"
+OUT "		ether daddr & 01:00:00:00:00:00 == 00:00:00:00:00:00 ether daddr != @nodisc add @unknown_dn { ether daddr }"
+OUT "	}"
+# The unknown_dn rule above only counts frames the bridge RELAYS. On a
+# router the download is locally generated and handed to the bridge, so it
+# never enters the bridge's prerouting hook and the device's download
+# bytes were never counted. The output hook sees those frames.
+# A frame is either relayed (prerouting) or generated locally (output),
+# never both, so the two hooks never add the same bytes twice.
+OUT "	chain discovery_out {"
+OUT "		type filter hook output priority -250; policy accept;"
 OUT "		ether daddr & 01:00:00:00:00:00 == 00:00:00:00:00:00 ether daddr != @nodisc add @unknown_dn { ether daddr }"
 OUT "	}"
 

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-apman
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=Ali
@@ -32,6 +32,29 @@ endef
 define Package/luci-app-apman/conffiles
 /etc/config/apman
 /etc/apman/daily.tsv
+endef
+
+# rpcd only scans /usr/libexec/rpcd when it starts, so a freshly installed
+# plugin is invisible until rpcd reloads: ubus answers -32000 "Object not
+# found" for every call. SIGHUP makes rpcd re-exec and rescan.
+define Package/luci-app-apman/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	/etc/init.d/apman enable >/dev/null 2>&1
+	/etc/init.d/apman restart >/dev/null 2>&1
+	/etc/init.d/rpcd reload >/dev/null 2>&1
+}
+exit 0
+endef
+
+define Package/luci-app-apman/postrm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	/etc/init.d/apman stop >/dev/null 2>&1
+	/etc/init.d/apman disable >/dev/null 2>&1
+	/etc/init.d/rpcd reload >/dev/null 2>&1
+}
+exit 0
 endef
 
 # arch-independent: nothing to compile

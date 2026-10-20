@@ -9,10 +9,15 @@ Copy the package to the router, then (as root):
 
 ```sh
 apk add kmod-nft-bridge
-apk add /tmp/luci-app-apman-1.0.0-r5.apk
+apk add /tmp/luci-app-apman-1.0.0-r6.apk
 /etc/init.d/apman enable
 /etc/init.d/apman start
 ```
+
+The post-install script enables and starts the service and reloads
+`rpcd` so the `apman` object becomes visible immediately (rpcd only
+scans `/usr/libexec/rpcd` on startup; without the reload every UI call
+fails with `Object not found`).
 
 `kmod-nft-bridge` is the only dependency that is not already in the base
 image (6.4KB). If the router has internet, `apk add kmod-nft-bridge`

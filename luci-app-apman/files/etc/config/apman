@@ -10,9 +10,12 @@ config apman 'global'
 # router UI), but not past the gateway. This is what makes randomised MACs
 # harmless: a new random MAC is a new device, so it gets no internet at all
 # until you allow it.
+# Only wifi ports are filtered: wired clients always keep full access.
+# The permitted LAN is whatever prefixes br-lan carries, so a bridge-mode AP
+# needs no default route and no gateway to be known.
 #   0      = off
-#   1      = on (needs a default route; stays off if the gateway MAC unknown)
-#   forced = on even if the gateway MAC cannot be detected
+#   1      = on (stays off if br-lan has no IPv4 address: fail open)
+#   forced = same as on, kept for compatibility
 	option whitelist '0'
 
 # One section per managed device. The id is the MAC with colons

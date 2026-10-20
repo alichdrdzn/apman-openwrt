@@ -11,12 +11,13 @@
 #     exec bash /path/to/repo/luci-app-apman/files/usr/sbin/apman-apply "$@"
 #   run under bash: /lib/functions.sh uses export -n, which dash lacks
 #   (busybox ash on the router supports it).
-# Fixture: br-lan = wlan0 (hwsim, mesh mode, real phy80211 port) + veths
+# Fixture: bridge $BRIDGE (apmanbr0) = wlan0 (hwsim, mesh mode, real
+# phy80211 port) + veths
 #   laneth/upl; netns: NSW=wifi client (phy1 mesh), NSL=wired, NSU=uplink.
 # Prints PASS/FAIL lines; exit 0 only if every check passed.
 #!/bin/bash
 # E2E v2: apman wifi-only limits/accounting + daily/monthly usage caps
-# fixture: br-lan = wlan0 (hwsim, mesh mode, real phy80211 port) + veths
+# fixture: bridge $BRIDGE = wlan0 (hwsim, mesh mode, real phy80211 port) + veths
 # laneth/upl; netns: NSW=wifi client (phy1 mesh), NSL=wired, NSU=uplink
 REPO="$(cd "$(dirname "$0")/.." && pwd)/luci-app-apman/files"
 TE=${TE:-/data/offload/apman-build/testenv}
@@ -28,6 +29,12 @@ export APMAN_RUN_DIR=$RUN
 export APMAN_DAILY_FILE=$RUN/daily.tsv
 DAILY=$RUN/daily.tsv
 NSW=nsapw; NSL=nsapl; NSU=nsapu
+# never br-lan: the harness must not be able to touch a real LAN bridge
+BRIDGE=apmanbr0
+export APMAN_BRIDGE=$BRIDGE
+# inherit nothing that silently redirects the code under test: a stray
+# APMAN_LAN_NETS/APMAN_GW_MAC in the parent shell would make these tests lie
+unset APMAN_LAN_NETS APMAN_WIFI_PORTS APMAN_DEVICES_TSV APMAN_GW_MAC
 PASS=0; FAIL=0
 pass(){ printf 'PASS  %s\n' "$1"; PASS=$((PASS+1)); }
 fail(){ printf 'FAIL  %s\n' "$1"; FAIL=$((FAIL+1)); }
@@ -37,6 +44,8 @@ cleanup(){
 	ip netns del $NSW 2>/dev/null
 	ip netns del $NSL 2>/dev/null
 	ip netns del $NSU 2>/dev/null
+	ip netns del $NSI 2>/dev/null
+	ip link del inet0 2>/dev/null
 	ip link del laneth 2>/dev/null
 	ip link del upl 2>/dev/null
 	iw phy phy1 set netns 1 2>/dev/null
@@ -56,33 +65,46 @@ ip link show wlan0 >/dev/null 2>&1 || modprobe mac80211_hwsim radios=2
 ip netns exec mtest iw phy phy1 set netns 1 2>/dev/null
 ip netns del mtest 2>/dev/null
 [ -d /sys/class/ieee80211/phy1 ] || { echo "ABORT: phy1 not in initial ns"; exit 1; }
-ip addr flush dev br-lan 2>/dev/null
-ip link del br-lan 2>/dev/null
-ip link add br-lan type bridge
+# The fixture bridge is NOT called br-lan on purpose: this harness must never
+# be able to delete or reconfigure a real LAN bridge on the machine running it
+# (APMAN_BRIDGE is what apman-apply reads, so the name is configurable).
+ip link del "$BRIDGE" 2>/dev/null
+ip link add "$BRIDGE" type bridge
 ip link add laneth type veth peer name lanethp
 ip link add upl type veth peer name uplp
-ip link set laneth master br-lan; ip link set laneth up
-ip link set upl master br-lan;   ip link set upl up
-ip link set br-lan up
-ip netns add $NSW; ip netns add $NSL; ip netns add $NSU
+ip link set laneth master "$BRIDGE"; ip link set laneth up
+ip link set upl master "$BRIDGE";   ip link set upl up
+ip addr add 10.66.66.254/24 dev "$BRIDGE"
+ip link set "$BRIDGE" up
+NSI=nsapi
+ip netns add $NSW; ip netns add $NSL; ip netns add $NSU; ip netns add $NSI
+# an off-LAN target so whitelist mode can be proven with real traffic: the
+# gateway NSU routes 10.99.99.0/24 out a second link to "the internet"
+ip link add inet0 type veth peer name inet1
+ip link set inet0 netns $NSU; ip link set inet1 netns $NSI
 ip link set lanethp netns $NSL
 ip link set uplp netns $NSU
 ip netns exec $NSL sh -c 'ip link set lo up; ip link set lanethp up
-	ip link set lanethp address aa:aa:aa:aa:aa:02; ip addr add 10.66.66.3/24 dev lanethp'
+	ip link set lanethp address aa:aa:aa:aa:aa:02; ip addr add 10.66.66.3/24 dev lanethp
+	ip route add default via 10.66.66.1'
 ip netns exec $NSU sh -c 'ip link set lo up; ip link set uplp up
-	ip addr add 10.66.66.1/24 dev uplp'
+	ip addr add 10.66.66.1/24 dev uplp
+	ip link set inet0 up; ip addr add 10.99.99.1/24 dev inet0; echo 1 > /proc/sys/net/ipv4/ip_forward'
+ip netns exec $NSI sh -c 'ip link set lo up; ip link set inet1 up
+	ip addr add 10.99.99.9/24 dev inet1; ip route add 10.66.66.0/24 via 10.99.99.1'
 # wifi AP-side port: mesh mode (the only mode this kernel lets us bridge)
 ip link set wlan0 down
 iw dev wlan0 set type mp
 iw dev wlan0 mesh leave 2>/dev/null
 ip link set wlan0 up
-ip link set wlan0 master br-lan
+ip link set wlan0 master "$BRIDGE"
 iw dev wlan0 mesh join apmanpoc freq 2412
 # wifi client: whole phy1 into NSW, mesh with wlan0
 iw phy phy1 set netns name $NSW
 ip netns exec $NSW sh -c 'ip link set lo up; ip link set wlan1 down
 	iw dev wlan1 set type mp; ip addr add 10.66.66.2/24 dev wlan1
-	ip link set wlan1 up; iw dev wlan1 mesh join apmanpoc freq 2412'
+	ip link set wlan1 up; iw dev wlan1 mesh join apmanpoc freq 2412
+	ip route add default via 10.66.66.1'
 sleep 3
 
 W1MAC=$(ip netns exec $NSW cat /sys/class/net/wlan1/address 2>/dev/null | tr 'A-F' 'a-f')
@@ -338,45 +360,105 @@ chk "T11 collector reads sets without --terse" $?
 
 # ---------- T12: whitelist mode (default deny) ----------
 # Randomised MACs make per-device rules useless, so whitelist mode inverts the
-# model: unknown wifi MACs keep LAN access but lose everything past the
-# gateway. The gateway MAC is the match key because every routed frame is
-# addressed to it, while LAN peers/DHCP/ARP are not.
-WLGW=$(nft list set bridge apman wanmac 2>/dev/null | sed -n 's/.*elements = { *\([0-9a-f:]*\).*/\1/p' | head -1)
-[ -n "$WLGW" ] || WLGW=aa:bb:cc:dd:ee:ff   # harness has no real gateway
+# model: non-allowed wifi clients keep the LAN but lose everything off-LAN.
+# The guard matches the LAN prefixes the bridge carries, NOT a gateway MAC:
+# a bridge-mode AP has no default route, and the old gateway-based guard
+# silently never installed, so the UI claimed "net off" while traffic flowed.
+# a whitelist test needs an UNMANAGED wifi client, so drop the device entry
+# (keep a copy: later checks restore it)
+cp "$UCISTORE" "$RUN/uci.before-t12"
+uci -q delete apman.dev_wifi01; uci -q commit apman
 uci -q set apman.global.whitelist=1; uci -q commit apman
-APMAN_GW_MAC=$WLGW /usr/sbin/apman-apply >/dev/null 2>&1
+/usr/sbin/apman-apply >/dev/null 2>&1
 nft list chain bridge apman wlguard >/dev/null 2>&1
-chk "T12 wlguard chain created when enabled" $?
-nft list set bridge apman wanmac 2>/dev/null | grep -qi "$WLGW"
-chk "T12 gateway MAC captured in wanmac set" $?
-nft list chain bridge apman wlguard | grep -q 'ether saddr != @allowed'
-chk "T12 guard excludes allowed devices" $?
-# a managed device must be in allowed; block/pause must remove it
+chk "T12 wlguard chain created when enabled (no gateway needed)" $?
+# ---- real traffic: the whole point of the feature ----
+ip netns exec $NSI ping -n -c1 -W1 10.99.99.1 >/dev/null 2>&1
+WL_INET=$(loss $NSW 10.99.99.9 100 20)
+[ "$WL_INET" -ge 80 ]
+chk "T12 unmanaged wifi client loses the internet (loss ${WL_INET}%)" $?
+WL_LAN=$(loss $NSW 10.66.66.3 100 10)
+[ "$WL_LAN" -le 20 ]
+chk "T12 unmanaged wifi client still reaches the LAN (loss ${WL_LAN}%)" $?
+WL_AP=$(loss $NSW 10.66.66.254 100 10)
+[ "$WL_AP" -le 20 ]
+chk "T12 unmanaged wifi client still reaches the AP UI (loss ${WL_AP}%)" $?
+WL_GW=$(loss $NSW 10.66.66.1 100 10)
+[ "$WL_GW" -le 20 ]
+chk "T12 unmanaged wifi client still reaches the gateway LAN side (loss ${WL_GW}%)" $?
+WL_WIRED=$(loss $NSL 10.99.99.9 100 20)
+[ "$WL_WIRED" -le 20 ]
+chk "T12 wired client unaffected by whitelist (loss ${WL_WIRED}%)" $?
+# allowing the device restores its internet immediately
+cp "$RUN/uci.before-t12" "$UCISTORE"
+uci -q set apman.global.whitelist=1; uci -q commit apman
+/usr/sbin/apman-apply >/dev/null 2>&1
+WL_OK=$(loss $NSW 10.99.99.9 100 20)
+[ "$WL_OK" -le 20 ]
+chk "T12 allowed device gets the internet back (loss ${WL_OK}%)" $?
+# blocking it removes it from allowed, so its internet dies again
+setcap block 1
+/usr/sbin/apman-apply >/dev/null 2>&1
+WL_BLK=$(loss $NSW 10.99.99.9 100 20)
+[ "$WL_BLK" -ge 80 ]
+chk "T12 blocked device loses the internet (loss ${WL_BLK}%)" $?
+setcap block 0
+/usr/sbin/apman-apply >/dev/null 2>&1
+nft list set bridge apman lan4 2>/dev/null | grep -q '10\.66\.66\.'
+chk "T12 LAN prefix captured from the bridge address" $?
+
+nft list chain bridge apman wlguard | grep -q 'ether saddr @allowed accept'
+chk "T12 allowed devices exempted before any drop" $?
+nft list chain bridge apman wlguard | grep -q 'ip daddr @lan4 accept'
+chk "T12 LAN destinations still accepted" $?
+nft list chain bridge apman wlguard | grep -q 'udp dport 67 accept'
+chk "T12 DHCP still accepted (client keeps its lease)" $?
+nft list chain bridge apman wlguard | grep -q 'ether type arp accept'
+chk "T12 ARP still accepted" $?
+nft list chain bridge apman wlguard | grep -q 'ip6 daddr fe80::/10 accept'
+chk "T12 IPv6 link-local still accepted" $?
+nft list chain bridge apman wlguard | grep -q 'meta l4proto ipv6-icmp accept'
+chk "T12 ICMPv6/neighbour discovery still accepted" $?
+nft list chain bridge apman wlguard | grep -q 'iifname @wifports ether saddr != @allowed drop'
+chk "T12 final rule drops only off-LAN traffic from wifi" $?
+nft list chain bridge apman wlguard | grep -q 'iifname .*laneth'
+chk "T12 guard never matches the wired port (expect no match)" $((1 - $?))
 nft list set bridge apman allowed 2>/dev/null | grep -qi "$W1MAC"
 chk "T12 managed device is allowed" $?
 setcap block 1
+/usr/sbin/apman-apply >/dev/null 2>&1
 nft list set bridge apman allowed 2>/dev/null | grep -qi "$W1MAC"
 chk "T12 blocked device removed from allowed (expect no match)" $((1 - $?))
 setcap block 0
-APMAN_GW_MAC=$WLGW /usr/sbin/apman-apply >/dev/null 2>&1
+/usr/sbin/apman-apply >/dev/null 2>&1
 nft list set bridge apman allowed 2>/dev/null | grep -qi "$W1MAC"
 chk "T12 unblocked device returns to allowed" $?
-# no managed devices at all must still deny everyone (empty allowed set parses)
 : > "$RUN/devices.tsv.empty"
-APMAN_DEVICES_TSV=$RUN/devices.tsv.empty APMAN_GW_MAC=$WLGW /usr/sbin/apman-apply >/dev/null 2>&1
-nft list chain bridge apman wlguard | grep -q 'ether saddr != @allowed ether daddr @wanmac drop'
+APMAN_DEVICES_TSV=$RUN/devices.tsv.empty /usr/sbin/apman-apply >/dev/null 2>&1
+nft list chain bridge apman wlguard | grep -q 'ether saddr != @allowed drop'
 chk "T12 empty allowlist still generates the deny rule" $?
 /usr/sbin/apman-apply >/dev/null 2>&1
-# fail open: no gateway MAC known => no guard (a missing route must not brick wifi)
-APMAN_GW_MAC= /usr/sbin/apman-apply >/dev/null 2>&1
+# fail open for real: a bridge with no address at all has no LAN prefix, so
+# the guard must not install (denying everyone would brick the wifi)
+ip addr flush dev "$BRIDGE" 2>/dev/null
+/usr/sbin/apman-apply >/dev/null 2>&1
+nft list chain bridge apman wlguard >/dev/null 2>&1
+chk "T12 no LAN prefix => guard absent (fail open)" $((1 - $?))
+ip addr add 10.66.66.254/24 dev "$BRIDGE"
+/usr/sbin/apman-apply >/dev/null 2>&1
+nft list chain bridge apman wlguard >/dev/null 2>&1
+chk "T12 guard returns once the LAN address is back" $?
+APMAN_LAN_NETS=10.9.9.0/24 /usr/sbin/apman-apply >/dev/null 2>&1
+nft list set bridge apman lan4 2>/dev/null | grep -q '10\.9\.9\.0/24'
+chk "T12 APMAN_LAN_NETS override honoured" $?
 uci -q set apman.global.whitelist=0; uci -q commit apman
 /usr/sbin/apman-apply >/dev/null 2>&1
 nft list chain bridge apman wlguard >/dev/null 2>&1
 chk "T12 guard removed when whitelist disabled (expect absent)" $((1 - $?))
 APMAN_ONCE=1 /usr/sbin/apman-collect >/dev/null 2>&1
 python3 -c "
-import json;s=json.load(open('$RUN/status.json'));assert 'whitelist' in s['settings'];assert 'gateway_mac' in s['settings']"
-chk "T12 status.json reports whitelist state + gateway" $?
+import json;s=json.load(open('$RUN/status.json'));assert 'whitelist' in s['settings'];assert 'lan_prefix' in s['settings']"
+chk "T12 status.json reports whitelist state + LAN prefix" $?
 
 # ---------- summary ----------
 echo "=============================================="

@@ -21,14 +21,16 @@ bridge ports (the bridge ports backed by a `phy80211` radio): wired
 clients are never rate-limited and their traffic is never counted.
 Block and pause still stop wired and wifi traffic alike.
 
-Whitelist mode keys on the **gateway MAC**, not on address ranges:
-every frame routed off-LAN is addressed to the gateway, while LAN
-peers, DHCP and ARP keep their own destinations. One rule therefore
-cuts internet access only, works for IPv4 and IPv6, and needs no
-knowledge of which bridge port carries the uplink. If no gateway MAC
-can be found (no default route yet at boot) the guard stays off rather
-than locking every wifi client out; the collector retries once a
-minute until it engages. The uplink
+Whitelist mode keys on the **LAN prefixes the bridge carries**, not on
+an address range and not on the gateway. Every frame a wifi client
+sends either stays on the LAN (permitted) or leaves it (dropped); DHCP,
+ARP, EAPOL, IPv6 link-local and ICMPv6 neighbour discovery stay
+permitted so clients keep their address and stay associated. A
+bridge-mode AP has no default route, which is exactly why the guard
+does not need one. Only ingress on wifi bridge ports is matched, so
+wired clients are never affected. If the bridge has no IPv4 address the
+guard stays off rather than locking every wifi client out, and the
+collector retries once a minute until it engages. The uplink
 may be a cable or a wifi extender, that never matters. Footprint:
 ~70KB (package 17KB compressed + 6.4KB `kmod-nft-bridge`).
 
@@ -37,7 +39,7 @@ may be a cable or a wifi extender, that never matters. Footprint:
 | Path | What it is |
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
-| `dist/luci-app-apman-1.0.0-r8.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
+| `dist/luci-app-apman-1.0.0-r9.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
 | `FLASHING.md` | Exact flashing steps: Windows and Linux VM with NAT |
 | `INSTALL.md` | Package install, usage and configuration reference |
 | `test/e2e-harness.sh` | Host E2E harness: hwsim wifi + wired fixture, 38 checks |
@@ -48,10 +50,10 @@ may be a cable or a wifi extender, that never matters. Footprint:
 2. Install the package:
 
    ```sh
-   scp -O dist/luci-app-apman-1.0.0-r8.apk root@192.168.1.1:/tmp/
+   scp -O dist/luci-app-apman-1.0.0-r9.apk root@192.168.1.1:/tmp/
    ssh root@192.168.1.1
    apk add kmod-nft-bridge
-   apk add /tmp/luci-app-apman-1.0.0-r8.apk
+   apk add /tmp/luci-app-apman-1.0.0-r9.apk
    /etc/init.d/apman enable
    /etc/init.d/apman start
    ```
@@ -78,7 +80,7 @@ make defconfig
 make package/luci-app-apman/compile
 
 # 4. Result
-ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r8.apk
+ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r9.apk
 ```
 
 Host prerequisite: `apt-get install libncurses-dev`.

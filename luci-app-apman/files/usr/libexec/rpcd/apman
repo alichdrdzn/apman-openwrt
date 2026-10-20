@@ -4,7 +4,10 @@
 #   "<plugin> list"             -> method table on stdout
 #   "<plugin> call <method>"    -> full call JSON on stdin (one line), reply JSON on stdout
 
-RUN=/tmp/apman
+# runtime dir; APMAN_RUN_DIR lets the test harness run hermetically instead of
+# reading whatever a previous run left in /tmp/apman
+RUN=${APMAN_RUN_DIR:-/tmp/apman}
+DAILY=${APMAN_DAILY_FILE:-/etc/apman/daily.tsv}
 
 # escape $1 for uci: backslash and double quote (uci itself quotes the value)
 esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
@@ -63,7 +66,7 @@ call)
 		# rows are "date 	 id 	 up 	 dn"; daily.tsv and today.tsv both hold
 		# today's rows, so merge per (date,id) with today winning, then emit
 		# {"days":{"YYYY-MM-DD":{"id":[up,dn],...},...}}
-		rows=$(cat /etc/apman/daily.tsv "$RUN/today.tsv" 2>/dev/null | awk -F'	' 'NF >= 4')
+		rows=$(cat "$DAILY" "$RUN/today.tsv" 2>/dev/null | awk -F'	' 'NF >= 4')
 		if [ -n "$rows" ]; then
 			merged=$(printf '%s\n' "$rows" | awk -F'	' -v OFS='	' '
 				{ u[$1 SUBSEP $2] = $3 + 0; d[$1 SUBSEP $2] = $4 + 0; k[$1 SUBSEP $2] = 1 }

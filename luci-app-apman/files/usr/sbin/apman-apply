@@ -6,9 +6,10 @@
 #                              (block/pause cuts wired AND wifi on purpose)
 #   prerouting discovery   prio -250  learn unknown MACs into counting sets
 #   prerouting wlguard     prio -200  whitelist mode: unknown wifi MACs keep
-#                              LAN access but lose everything off-LAN (match on
-#                              the gateway MAC: all routed traffic is addressed
-#                              to it, LAN peers/DHCP/ARP are not)
+#                              LAN access but lose everything off-LAN. Matches
+#                              the LAN prefixes the bridge carries, so it works
+#                              on a bridge-mode AP with no default route; wired
+#                              ports are never matched
 #   prerouting lim_ul      prio -150  upload rate limits, wifi ingress only
 #   prerouting quota_ul    prio -140  usage cap (daily/monthly), wifi only
 #   prerouting acc_up      prio -100  upload counters, wifi ingress only
@@ -29,6 +30,9 @@
 # APMAN_WIFI_PORTS="wlan0 wlan1" overrides wifi port discovery.
 
 RUN=${APMAN_RUN_DIR:-/tmp/apman}
+# the LAN bridge; only tests override this, so a harness can never touch a
+# real br-lan on the machine it runs on
+BRIDGE=${APMAN_BRIDGE:-br-lan}
 DEVS=$RUN/devices.tsv
 GEN=$RUN/apman.nft
 FLUSH=$RUN/apman-flush.nft
@@ -86,7 +90,7 @@ collect_wifi_ports() {
 	if [ -n "$APMAN_WIFI_PORTS" ]; then
 		printf '%s\n' "$APMAN_WIFI_PORTS" | tr ',' ' ' | tr ' ' '\n' | grep -v '^$' >> "$WIFI"
 	else
-		for p in /sys/class/net/br-lan/brif/*; do
+		for p in /sys/class/net/$BRIDGE/brif/*; do
 			[ -e "$p" ] || continue
 			# brif/<port> symlinks to the port's brport dir (not the
 			# netdev dir), so test phy80211 via /sys/class/net/<portname>
@@ -97,35 +101,32 @@ collect_wifi_ports() {
 	sort -u -o "$WIFI" "$WIFI"
 }
 
-# ---------- gateway MAC: destination of every routed (off-LAN) frame ----------
-# Whitelist mode blocks by gateway MAC instead of by address range: LAN peers,
-# DHCP and ARP keep their own destinations, so one rule cuts internet access
-# only, works for IPv4 and IPv6, and needs no knowledge of which bridge port
-# is the uplink. Empty result => whitelist mode disables itself (fail open:
-# locking every wifi client out because a route is missing is worse).
-collect_gwmac() {
-	GWMAC=$RUN/gwmac.tmp
-	: > "$GWMAC"
-	if [ -n "$APMAN_GW_MAC" ]; then
-		printf '%s\n' "$APMAN_GW_MAC" | tr 'A-F' 'a-f' >> "$GWMAC"
+# ---------- LAN prefixes: what a wifi client may still reach ----------
+# Whitelist mode needs no gateway and no default route, because a bridge-mode
+# AP (the normal setup here) has neither, it is just a bridge with an address.
+# The guard allows the LAN prefixes the bridge itself carries, plus DHCP/ARP,
+# link-local and multicast, and drops everything else arriving from wifi ports.
+# Wired ports are never matched, so wired clients are never affected.
+# Empty result => whitelist stays off (fail open): locking every wifi client
+# out because an address is momentarily missing is worse than not filtering.
+collect_lannet() {
+	LAN4=$RUN/lan4.tmp
+	LAN6=$RUN/lan6.tmp
+	: > "$LAN4"
+	: > "$LAN6"
+	if [ -n "$APMAN_LAN_NETS" ]; then
+		printf '%s\n' "$APMAN_LAN_NETS" | tr ', ' '\n\n' | grep -v '^$' \
+			| grep -v ':' >> "$LAN4"
+		printf '%s\n' "$APMAN_LAN_NETS" | tr ', ' '\n\n' | grep ':' \
+			| grep -v '^fe80:' >> "$LAN6"
 	else
-		local gw hop mac
-		for gw in $(ip -4 route 2>/dev/null | awk '/^default/ {print $3; exit}') \
-			  $(ip -6 route 2>/dev/null | awk '/^default/ {print $3; exit}'); do
-			[ -n "$gw" ] || continue
-			mac=$(ip neigh show "$gw" 2>/dev/null | awk 'NR==1 {print $5}')
-			[ -n "$mac" ] && printf '%s\n' "$mac" | tr 'A-F' 'a-f' >> "$GWMAC"
-			break
-		done
-		# unresolved neighbour entry (gw not yet contacted): the modem's MAC is
-		# still whatever the LAN default route resolves to after first traffic;
-		# fall back to the first non-apman MAC seen echoing on the bridge
-		if [ ! -s "$GWMAC" ] && [ -n "$gw" ]; then
-			ip neigh 2>/dev/null | awk -v g="$gw" '$1 == g { print $5; exit }' \
-				| tr 'A-F' 'a-f' >> "$GWMAC"
-		fi
+		# every address the LAN bridge carries (nft canonicalises host bits)
+		ip -o -4 addr show dev "$BRIDGE" 2>/dev/null | awk '{print $4}' >> "$LAN4"
+		ip -o -6 addr show dev "$BRIDGE" 2>/dev/null | awk '{print $4}' \
+			| grep -v '^fe80:' >> "$LAN6"
 	fi
-	grep -E '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' "$GWMAC" | sort -u -o "$GWMAC" "$GWMAC" 2>/dev/null || :
+	sort -u -o "$LAN4" "$LAN4" 2>/dev/null || :
+	sort -u -o "$LAN6" "$LAN6" 2>/dev/null || :
 }
 
 # ---------- whitelist mode: allowed = managed, not blocked/paused ----------
@@ -162,8 +163,8 @@ collect_exclusions() {
 	{
 		echo "00:00:00:00:00:00"
 		# our own MACs (bridge + member ports)
-		cat /sys/class/net/br-lan/address 2>/dev/null
-		for p in /sys/class/net/br-lan/brif/*; do
+		cat /sys/class/net/$BRIDGE/address 2>/dev/null
+		for p in /sys/class/net/$BRIDGE/brif/*; do
 			cat "$p/address" 2>/dev/null
 		done
 		# default gateway MAC (the modem): usually all internet traffic
@@ -193,7 +194,7 @@ CNT=$(cat "$RUN/counters.tmp" 2>/dev/null)
 
 collect_exclusions
 collect_wifi_ports
-collect_gwmac
+collect_lannet
 collect_allowed
 
 ENABLED=$(read_setting enabled 1)
@@ -308,13 +309,21 @@ OUT "	}"
 # whitelist guard: unknown wifi MACs may talk to the LAN but not past the
 # gateway. Placed before discovery so blocked clients are not learned as new.
 WL_ACTIVE=0
-if [ "$WLON" = 1 ] && [ -s "$GWMAC" ]; then
+if [ "$WLON" = 1 ] && [ -s "$LAN4" ]; then
 	WL_ACTIVE=1
-	OUT "	set wanmac { type ether_addr; flags constant; elements = {"
-	while IFS= read -r m; do
-		[ -n "$m" ] && OUT "		$m ,"
-	done < "$GWMAC"
+	# allowed devices skip the guard entirely (same as blocked/paused do)
+	OUT "	set lan4 { type ipv4_addr; flags interval; elements = {"
+	while IFS= read -r n; do
+		[ -n "$n" ] && OUT "		$n ,"
+	done < "$LAN4"
 	OUT "	} }"
+	if [ -s "$LAN6" ]; then
+		OUT "	set lan6 { type ipv6_addr; flags interval; elements = {"
+		while IFS= read -r n; do
+			[ -n "$n" ] && OUT "		$n ,"
+		done < "$LAN6"
+		OUT "	} }"
+	fi
 	# 'allowed' always exists: an empty set must deny everyone, so the guard
 	# rule can stay in its single form (no separate no-devices branch)
 	OUT "	set allowed { type ether_addr; flags interval;"
@@ -328,7 +337,26 @@ if [ "$WLON" = 1 ] && [ -s "$GWMAC" ]; then
 	OUT "	}"
 	OUT "	chain wlguard {"
 	OUT "		type filter hook prerouting priority -200; policy accept;"
-	OUT "		iifname @wifports ether saddr != @allowed ether daddr @wanmac drop"
+	OUT "		# allowed devices are exempt from every line below"
+	OUT "		iifname @wifports ether saddr @allowed accept"
+	OUT "		# DHCP, EAPOL (WPA handshake), ARP: wifi association keeps working"
+	OUT "		iifname @wifports ip daddr 255.255.255.255 accept"
+	OUT "		iifname @wifports udp dport 67 accept"
+	OUT "		iifname @wifports ether type arp accept"
+	OUT "		iifname @wifports ether type 0x888e accept"
+	OUT "		# the LAN itself (printer, NAS, other clients, this AP's UI)"
+	OUT "		iifname @wifports ip daddr @lan4 accept"
+	# IPv6 needs its own allowances: link-local, our LAN prefix, multicast, and
+	# the ICMPv6 that neighbour discovery (the v6 equivalent of ARP) rides on.
+	# Router advertisements are multicast, so a blocked client keeps its address.
+	OUT "		iifname @wifports ip6 daddr fe80::/10 accept"
+	if [ -s "$LAN6" ]; then
+		OUT "		iifname @wifports ip6 daddr @lan6 accept"
+	fi
+	OUT "		iifname @wifports ip6 daddr ff00::/8 accept"
+	OUT "		iifname @wifports meta l4proto ipv6-icmp accept"
+	# everything left over is off-LAN traffic from a non-allowed wifi client
+	OUT "		iifname @wifports ether saddr != @allowed drop"
 	OUT "	}"
 fi
 
@@ -405,5 +433,5 @@ if ! nft -f "$GEN"; then
 	exit 1
 fi
 
-rm -f "$EXCL" "$WIFI" "$GEN" "$GWMAC" "$ALLOWED" "$RUN/counters.tmp" "$DEVS.new"
+rm -f "$EXCL" "$WIFI" "$GEN" "$LAN4" "$LAN6" "$ALLOWED" "$RUN/counters.tmp" "$DEVS.new"
 exit 0

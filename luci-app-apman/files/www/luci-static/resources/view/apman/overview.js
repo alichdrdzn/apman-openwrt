@@ -688,7 +688,7 @@ return view.extend({
 			E('div', { 'class': 'cbi-value', 'id': 'apm-wl-state', style: (Number(s.whitelist) === 2) ? '' : 'display:none' }, [
 				E('div', { 'class': 'apm-hint apm-hint--warn' },
 					Number(s.whitelist) === 2
-						? _('No gateway found: whitelist mode is not filtering yet. Set a default route or set the option to forced.')
+						? _('Not filtering yet: the LAN bridge has no IPv4 address, so there is no LAN prefix to permit. Whitelist mode stays off rather than cutting every wifi client. Give br-lan an address (any bridge-mode AP already has one) and it engages on the next pass.')
 						: '')
 			]),
 			E('div', { 'class': 'cbi-value' }, [

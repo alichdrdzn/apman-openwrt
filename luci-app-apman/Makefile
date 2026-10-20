@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-apman
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=9
+PKG_RELEASE:=10
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=Ali
@@ -14,13 +14,19 @@ define Package/luci-app-apman
   CATEGORY:=LuCI
   SUBCATEGORY:=Applications
   TITLE:=AP Manager - per-device bandwidth caps, pause and traffic history
-  DEPENDS:=+luci-base +kmod-nft-bridge +nftables-json
+  # nftables is the virtual both nftables-json and nftables-nojson provide: the
+  # code never uses "nft --json", so demanding the JSON build would force a
+  # package swap on devices that ship the smaller nojson variant
+  DEPENDS:=+luci-base +kmod-nft-bridge +nftables
   PKGARCH:=all
 endef
 
 define Package/luci-app-apman/description
-  User management for an OpenWrt access point (bridge mode), built for
-  the Xiaomi Mi Router 4A Gigabit. Per-device download/upload caps and
+  User management for an OpenWrt access point (bridge mode). Developed
+  on a Xiaomi Mi Router 4A Gigabit, but the package is architecture
+  independent shell and JavaScript, so it runs on any OpenWrt 25.12 or
+  newer device whose wifi is bridged into a LAN bridge. Per-device
+  download/upload caps and
   daily/monthly wifi usage caps, pause and block, live speeds and
   persistent traffic history behind a dark LuCI dashboard. Enforcement
   and accounting use nftables bridge-family rules on br-lan, scoped to

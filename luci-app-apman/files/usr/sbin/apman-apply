@@ -30,9 +30,12 @@
 # APMAN_WIFI_PORTS="wlan0 wlan1" overrides wifi port discovery.
 
 RUN=${APMAN_RUN_DIR:-/tmp/apman}
-# the LAN bridge; only tests override this, so a harness can never touch a
-# real br-lan on the machine it runs on
-BRIDGE=${APMAN_BRIDGE:-br-lan}
+# The LAN bridge. br-lan is the OpenWrt default, but a device can rename it
+# (or the user can run this as a dumb AP onto a custom bridge), so it is a
+# setting. APMAN_BRIDGE still wins for tests, where the fixture bridge must
+# never be a real br-lan.
+BRIDGE=${APMAN_BRIDGE:-$(uci -q get apman.global.bridge)}
+[ -n "$BRIDGE" ] || BRIDGE=br-lan
 DEVS=$RUN/devices.tsv
 GEN=$RUN/apman.nft
 FLUSH=$RUN/apman-flush.nft

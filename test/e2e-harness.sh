@@ -19,7 +19,8 @@
 # E2E v2: apman wifi-only limits/accounting + daily/monthly usage caps
 # fixture: bridge $BRIDGE = wlan0 (hwsim, mesh mode, real phy80211 port) + veths
 # laneth/upl; netns: NSW=wifi client (phy1 mesh), NSL=wired, NSU=uplink
-REPO="$(cd "$(dirname "$0")/.." && pwd)/luci-app-apman/files"
+PKGDIR="$(cd "$(dirname "$0")/.." && pwd)/luci-app-apman"
+REPO="$PKGDIR/files"
 TE=${TE:-/data/offload/apman-build/testenv}
 RUN=/tmp/apman-e2e
 unset APMAN_WIFI_PORTS
@@ -31,10 +32,10 @@ DAILY=$RUN/daily.tsv
 NSW=nsapw; NSL=nsapl; NSU=nsapu
 # never br-lan: the harness must not be able to touch a real LAN bridge
 BRIDGE=apmanbr0
-export APMAN_BRIDGE=$BRIDGE
-# inherit nothing that silently redirects the code under test: a stray
-# APMAN_LAN_NETS/APMAN_GW_MAC in the parent shell would make these tests lie
-unset APMAN_LAN_NETS APMAN_WIFI_PORTS APMAN_DEVICES_TSV APMAN_GW_MAC
+# NOT exported as APMAN_BRIDGE: the fixture bridge is configured through uci
+# like on a real device, so these tests exercise the production path. Exporting
+# it would shadow the setting and make "bridge setting honoured" pass falsely.
+unset APMAN_BRIDGE APMAN_LAN_NETS APMAN_WIFI_PORTS APMAN_DEVICES_TSV APMAN_GW_MAC
 PASS=0; FAIL=0
 pass(){ printf 'PASS  %s\n' "$1"; PASS=$((PASS+1)); }
 fail(){ printf 'FAIL  %s\n' "$1"; FAIL=$((FAIL+1)); }
@@ -133,6 +134,7 @@ echo "FIXTURE OK: wifi client $W1MAC via mesh+bridge, wired $BB"
 cat > "$UCISTORE" <<EOF
 apman|global||global
 apman|global|enabled|1
+apman|global|bridge|$BRIDGE
 apman|global|interval|10
 apman|global|history_days|30
 apman|global|snapshot_minutes|10
@@ -459,6 +461,40 @@ APMAN_ONCE=1 /usr/sbin/apman-collect >/dev/null 2>&1
 python3 -c "
 import json;s=json.load(open('$RUN/status.json'));assert 'whitelist' in s['settings'];assert 'lan_prefix' in s['settings']"
 chk "T12 status.json reports whitelist state + LAN prefix" $?
+
+# ---------- T13: portability, not tied to one router ----------
+# The package must run on any OpenWrt device, so nothing may hardcode the
+# target: the bridge is configurable, arch is noarch, and the only
+# architecture-specific dependency is the vendor's own kmod.
+uci -q set apman.global.whitelist=1; uci -q set apman.global.bridge="$BRIDGE"
+uci -q commit apman
+/usr/sbin/apman-apply >/dev/null 2>&1
+nft list set bridge apman lan4 2>/dev/null | grep -q '10\.66\.66\.'
+chk "T13 explicit bridge setting is honoured (LAN prefix read from it)" $?
+uci -q set apman.global.bridge=zzzbridge9; uci -q commit apman
+/usr/sbin/apman-apply >/dev/null 2>&1
+nft list chain bridge apman wlguard >/dev/null 2>&1
+chk "T13 unknown bridge yields no guard, no crash (expect absent)" $((1 - $?))
+uci -q set apman.global.bridge="$BRIDGE"; uci -q commit apman
+/usr/sbin/apman-apply >/dev/null 2>&1
+# the collector must report the same bridge it polices, so the UI can show it
+APMAN_ONCE=1 /usr/sbin/apman-collect >/dev/null 2>&1
+python3 -c "
+import json;s=json.load(open('$RUN/status.json'));assert s['settings'].get('bridge')=='$BRIDGE', s['settings'].get('bridge')"
+chk "T13 status.json reports the bridge it polices" $?
+grep -q 'PKGARCH:=all' "$PKGDIR/Makefile"
+chk "T13 package is architecture independent (PKGARCH:=all)" $?
+grep -q 'mt7621\|ramips\|mipsel' "$PKGDIR/Makefile"
+chk "T13 Makefile carries no target-specific setting (expect none)" $((1 - $?))
+# only the nftables virtual may be required: demanding a specific build would
+# swap packages on devices shipping the other variant
+DEPLINE=$(grep -m1 '^  DEPENDS:=' "$PKGDIR/Makefile")
+case "$DEPLINE" in
+	*nftables-json*|*nftables-nojson*) dep_bad=1 ;;
+	*nftables*) dep_bad=0 ;;
+	*) dep_bad=1 ;;
+esac
+chk "T13 depends on the nftables virtual, not one JSON variant ($DEPLINE)" $dep_bad
 
 # ---------- summary ----------
 echo "=============================================="

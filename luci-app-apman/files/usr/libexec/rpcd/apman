@@ -195,6 +195,8 @@ call)
 		done
 		IGNJ=$(jget ignored_macs)
 		[ -n "$IGNJ" ] && uci -q set apman.global.ignored_macs="$IGNJ"
+		BRJ=$(jget bridge)
+		[ -n "$BRJ" ] && uci -q set apman.global.bridge="$BRJ"
 		WLJ=$(jget whitelist)
 		if [ -n "$WLJ" ]; then
 			case "$WLJ" in

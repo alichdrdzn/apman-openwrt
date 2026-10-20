@@ -384,6 +384,7 @@ EOF
 	json_add_int history_days "$histdays"
 	json_add_int snapshot_minutes "$snapmin"
 	json_add_string ignored_macs "$(uci -q get apman.global.ignored_macs)"
+	json_add_string bridge "$(read_setting bridge br-lan)"
 	json_add_int whitelist "$(wl_state)"
 	json_add_string lan_prefix "$(nft list set bridge apman lan4 2>/dev/null | sed -n 's/.*elements = { *\([0-9.]*\/[0-9]*\).*/\1/p' | head -1)"
 	json_close_object

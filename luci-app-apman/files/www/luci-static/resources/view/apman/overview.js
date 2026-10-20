@@ -22,7 +22,7 @@ var callIgnore   = rpc.declare({ object: 'apman', method: 'ignore',
 	params: { mac: '' }, expect: {} });
 var callSettings = rpc.declare({ object: 'apman', method: 'settings',
 	params: { enabled: 0, interval: 0, history_days: 0, snapshot_minutes: 0,
-	ignored_macs: '', whitelist: 0 }, expect: {} });
+	ignored_macs: '', whitelist: 0, bridge: '' }, expect: {} });
 var callApply    = rpc.declare({ object: 'apman', method: 'apply', expect: {} });
 
 var css = [
@@ -692,6 +692,16 @@ return view.extend({
 						: '')
 			]),
 			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title', 'for': 'apm-br' },
+					_('LAN bridge')),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', { 'id': 'apm-br', 'type': 'text', 'placeholder': 'br-lan',
+						value: s.bridge || 'br-lan' }),
+					E('div', { 'class': 'apm-hint' },
+						_('The bridge whose wifi ports are policed. Leave it unless this device names its bridge differently; settings are re-applied on the next collection pass.'))
+				])
+			]),
+			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title', 'for': 'apm-ign' },
 					_('Hidden MACs (space separated)')),
 				E('div', { 'class': 'cbi-value-field' }, [
@@ -706,7 +716,8 @@ return view.extend({
 						history_days: parseInt(document.getElementById('apm-hd').value, 10) || 30,
 						snapshot_minutes: parseInt(document.getElementById('apm-sm').value, 10) || 10,
 						ignored_macs: document.getElementById('apm-ign').value.trim(),
-						whitelist: document.getElementById('apm-wl').checked ? 1 : 0
+						whitelist: document.getElementById('apm-wl').checked ? 1 : 0,
+						bridge: document.getElementById('apm-br').value.trim() || 'br-lan'
 					};
 					ui.hideModal();
 					callSettings(payload).then(function () { return self.flush(); });

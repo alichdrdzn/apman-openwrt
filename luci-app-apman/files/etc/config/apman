@@ -4,6 +4,10 @@ config apman 'global'
 	option history_days '30'
 	option snapshot_minutes '10'
 
+# The LAN bridge to police. br-lan is the OpenWrt default; change it if this
+# device names its bridge differently. Read by apman-apply on every run.
+	option bridge 'br-lan'
+
 # Whitelist (default deny) mode. Off: every device may use the internet and you
 # restrict specific ones. On: only "allowed" devices reach the internet; every
 # other device can still connect to wifi and reach the LAN (printer, NAS,
@@ -11,10 +15,10 @@ config apman 'global'
 # harmless: a new random MAC is a new device, so it gets no internet at all
 # until you allow it.
 # Only wifi ports are filtered: wired clients always keep full access.
-# The permitted LAN is whatever prefixes br-lan carries, so a bridge-mode AP
-# needs no default route and no gateway to be known.
+# The permitted LAN is whatever prefixes the bridge carries, so a bridge-mode
+# AP needs no default route and no gateway to be known.
 #   0      = off
-#   1      = on (stays off if br-lan has no IPv4 address: fail open)
+#   1      = on (stays off if the bridge has no IPv4 address: fail open)
 #   forced = same as on, kept for compatibility
 	option whitelist '0'
 

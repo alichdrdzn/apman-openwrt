@@ -45,6 +45,17 @@ seed_today() {
 }
 seed_today
 
+# whitelist state as the UI needs it: 0 off, 1 enforcing, 2 enabled but
+# inactive because no gateway MAC could be detected
+wl_state() {
+	local wl
+	wl=$(uci -q get apman.global.whitelist)
+	case "$wl" in
+		0|''|false|no|off) echo 0; return 0 ;;
+	esac
+	nft list chain bridge apman wlguard >/dev/null 2>&1 && echo 1 || echo 2
+}
+
 read_setting() {
 	local v
 	v=$(uci -q get "apman.global.$1")
@@ -254,6 +265,18 @@ sample_step() {
 	# nft only when membership changed (see quota_step)
 	quota_step "$date" "$month"
 
+	# whitelist self-heal: enabled but not enforcing means the gateway MAC was
+	# unknown when apply last ran (fresh boot, empty neighbour table). Retry at
+	# most once a minute rather than leaving wifi clients unfiltered until the
+	# next config change.
+	if [ "$(wl_state)" = 2 ]; then
+		lastwl=$(int_or "$(cat "$RUN/lastwl" 2>/dev/null)" 0)
+		if [ $((now - lastwl)) -ge 60 ]; then
+			date +%s > "$RUN/lastwl.tmp" && mv "$RUN/lastwl.tmp" "$RUN/lastwl"
+			/usr/sbin/apman-apply >/dev/null 2>&1
+		fi
+	fi
+
 	# unknown devices; carry last_change while totals unchanged.
 	# set counters restart after each apman-apply (table delete+recreate):
 	# when a total shrinks, treat the new value as post-reset delta
@@ -361,6 +384,8 @@ EOF
 	json_add_int history_days "$histdays"
 	json_add_int snapshot_minutes "$snapmin"
 	json_add_string ignored_macs "$(uci -q get apman.global.ignored_macs)"
+	json_add_int whitelist "$(wl_state)"
+	json_add_string gateway_mac "$(nft list set bridge apman wanmac 2>/dev/null | sed -n 's/.*elements = { *\([0-9a-f:]*\).*/\1/p' | head -1)"
 	json_close_object
 
 	json_add_string date "$date"

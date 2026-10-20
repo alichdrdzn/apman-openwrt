@@ -5,6 +5,10 @@
 #   prerouting blockchain  prio -300  drop traffic of blocked/paused MACs
 #                              (block/pause cuts wired AND wifi on purpose)
 #   prerouting discovery   prio -250  learn unknown MACs into counting sets
+#   prerouting wlguard     prio -200  whitelist mode: unknown wifi MACs keep
+#                              LAN access but lose everything off-LAN (match on
+#                              the gateway MAC: all routed traffic is addressed
+#                              to it, LAN peers/DHCP/ARP are not)
 #   prerouting lim_ul      prio -150  upload rate limits, wifi ingress only
 #   prerouting quota_ul    prio -140  usage cap (daily/monthly), wifi only
 #   prerouting acc_up      prio -100  upload counters, wifi ingress only
@@ -93,6 +97,54 @@ collect_wifi_ports() {
 	sort -u -o "$WIFI" "$WIFI"
 }
 
+# ---------- gateway MAC: destination of every routed (off-LAN) frame ----------
+# Whitelist mode blocks by gateway MAC instead of by address range: LAN peers,
+# DHCP and ARP keep their own destinations, so one rule cuts internet access
+# only, works for IPv4 and IPv6, and needs no knowledge of which bridge port
+# is the uplink. Empty result => whitelist mode disables itself (fail open:
+# locking every wifi client out because a route is missing is worse).
+collect_gwmac() {
+	GWMAC=$RUN/gwmac.tmp
+	: > "$GWMAC"
+	if [ -n "$APMAN_GW_MAC" ]; then
+		printf '%s\n' "$APMAN_GW_MAC" | tr 'A-F' 'a-f' >> "$GWMAC"
+	else
+		local gw hop mac
+		for gw in $(ip -4 route 2>/dev/null | awk '/^default/ {print $3; exit}') \
+			  $(ip -6 route 2>/dev/null | awk '/^default/ {print $3; exit}'); do
+			[ -n "$gw" ] || continue
+			mac=$(ip neigh show "$gw" 2>/dev/null | awk 'NR==1 {print $5}')
+			[ -n "$mac" ] && printf '%s\n' "$mac" | tr 'A-F' 'a-f' >> "$GWMAC"
+			break
+		done
+		# unresolved neighbour entry (gw not yet contacted): the modem's MAC is
+		# still whatever the LAN default route resolves to after first traffic;
+		# fall back to the first non-apman MAC seen echoing on the bridge
+		if [ ! -s "$GWMAC" ] && [ -n "$gw" ]; then
+			ip neigh 2>/dev/null | awk -v g="$gw" '$1 == g { print $5; exit }' \
+				| tr 'A-F' 'a-f' >> "$GWMAC"
+		fi
+	fi
+	grep -E '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' "$GWMAC" | sort -u -o "$GWMAC" "$GWMAC" 2>/dev/null || :
+}
+
+# ---------- whitelist mode: allowed = managed, not blocked/paused ----------
+collect_allowed() {
+	ALLOWED=$RUN/allowed.tmp
+	NOW=$(date +%s)
+	: > "$ALLOWED"
+	while IFS='	' read -r id mac down up lim block pause alias sec qdm qmm; do
+		[ -n "$mac" ] || continue
+		[ "$block" = 1 ] && continue
+		# pause_until is a timestamp; only a future one excludes the device
+		case "$pause" in
+			''|*[!0-9]*) pause=0 ;;
+		esac
+		[ "$pause" -gt "$NOW" ] 2>/dev/null && continue
+		printf '%s\n' "$mac" >> "$ALLOWED"
+	done < "$DEVS"
+}
+
 # ---------- current counters: "name<TAB>bytes" ----------
 read_counters() {
 	nft --terse list table bridge apman 2>/dev/null | awk '
@@ -141,9 +193,19 @@ CNT=$(cat "$RUN/counters.tmp" 2>/dev/null)
 
 collect_exclusions
 collect_wifi_ports
+collect_gwmac
+collect_allowed
 
 ENABLED=$(read_setting enabled 1)
 [ "$ENABLED" = 1 ] || DISABLED=1
+# whitelist (default-deny) mode: off | on | forced. 'on' only engages when a
+# gateway MAC is known, so a missing default route can never lock out the LAN
+WL=$(read_setting whitelist 0)
+case "$WL" in
+	1|on|forced|yes|true) WLON=1 ;;
+	*) WLON=0 ;;
+esac
+[ "$WL" = forced ] && WLON=1
 
 OUT() { printf '%s\n' "$1" >> "$GEN"; }
 
@@ -243,6 +305,33 @@ OUT "		ether saddr @blocked drop"
 OUT "		ether daddr @blocked drop"
 OUT "	}"
 
+# whitelist guard: unknown wifi MACs may talk to the LAN but not past the
+# gateway. Placed before discovery so blocked clients are not learned as new.
+WL_ACTIVE=0
+if [ "$WLON" = 1 ] && [ -s "$GWMAC" ]; then
+	WL_ACTIVE=1
+	OUT "	set wanmac { type ether_addr; flags constant; elements = {"
+	while IFS= read -r m; do
+		[ -n "$m" ] && OUT "		$m ,"
+	done < "$GWMAC"
+	OUT "	} }"
+	# 'allowed' always exists: an empty set must deny everyone, so the guard
+	# rule can stay in its single form (no separate no-devices branch)
+	OUT "	set allowed { type ether_addr; flags interval;"
+	if [ -s "$ALLOWED" ]; then
+		OUT "		elements = {"
+		while IFS= read -r m; do
+			[ -n "$m" ] && OUT "			$m ,"
+		done < "$ALLOWED"
+		OUT "		}"
+	fi
+	OUT "	}"
+	OUT "	chain wlguard {"
+	OUT "		type filter hook prerouting priority -200; policy accept;"
+	OUT "		iifname @wifports ether saddr != @allowed ether daddr @wanmac drop"
+	OUT "	}"
+fi
+
 OUT "	chain discovery {"
 OUT "		type filter hook prerouting priority -250; policy accept;"
 OUT "		ether saddr != @nodisc add @unknown_up { ether saddr }"
@@ -316,5 +405,5 @@ if ! nft -f "$GEN"; then
 	exit 1
 fi
 
-rm -f "$EXCL" "$WIFI" "$GEN" "$RUN/counters.tmp" "$DEVS.new"
+rm -f "$EXCL" "$WIFI" "$GEN" "$GWMAC" "$ALLOWED" "$RUN/counters.tmp" "$DEVS.new"
 exit 0

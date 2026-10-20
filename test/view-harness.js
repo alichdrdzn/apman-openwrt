@@ -311,6 +311,36 @@ check('save payload from Edit modal is well formed', () => {
 	return JSON.stringify(p);
 });
 
+check('whitelist mode renders net chips and settings control', () => {
+	// settings.whitelist=1 must surface "net off" on non-allowed devices and
+	// expose the toggle in the settings modal (otherwise the feature is dead UI)
+	const st = JSON.parse(JSON.stringify(sample.status));
+	st.settings.whitelist = 1;
+	const root = mod.render.call(mod, [st, sample.history]);
+	const texts = [];
+	(function walk(n) {
+		if (!isNode(n)) return;
+		if (n._text) texts.push(n._text);
+		if (n.attrs && n.attrs['class'] && /apm-net/.test(n.attrs['class']))
+			texts.push('CHIP:' + n.attrs['class']);
+		n.children.forEach(walk);
+	})(root);
+	const joined = texts.join('|');
+	if (joined.indexOf('net off') < 0) throw new Error('no "net off" chip in whitelist mode');
+	if (joined.indexOf('apm-net--no') < 0) throw new Error('no net-off styling applied');
+	mod.openSettings();
+	const m = ui.modals[ui.modals.length - 1].dlg;
+	let found = null;
+	(function walk(n) {
+		if (!isNode(n)) return;
+		if (n.attrs && n.attrs.id === 'apm-wl') found = n;
+		n.children.forEach(walk);
+	})(m);
+	if (!found) throw new Error('settings modal has no whitelist toggle');
+	if (!found.attrs.checked) throw new Error('whitelist toggle not checked for state=1');
+	return 'chips + toggle ok';
+});
+
 check('every rpc method the view uses exists in the rpcd plugin', () => {
 	const fs2 = require('fs');
 	const rpcd = fs2.readFileSync(path.join(ROOT, 'luci-app-apman/files/usr/libexec/rpcd/apman'), 'utf8');

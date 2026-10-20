@@ -336,6 +336,48 @@ chk "T11 unknown device persisted to unknown.tsv" $?
 grep -q 'nft list set bridge apman' "$REPO/usr/sbin/apman-collect"
 chk "T11 collector reads sets without --terse" $?
 
+# ---------- T12: whitelist mode (default deny) ----------
+# Randomised MACs make per-device rules useless, so whitelist mode inverts the
+# model: unknown wifi MACs keep LAN access but lose everything past the
+# gateway. The gateway MAC is the match key because every routed frame is
+# addressed to it, while LAN peers/DHCP/ARP are not.
+WLGW=$(nft list set bridge apman wanmac 2>/dev/null | sed -n 's/.*elements = { *\([0-9a-f:]*\).*/\1/p' | head -1)
+[ -n "$WLGW" ] || WLGW=aa:bb:cc:dd:ee:ff   # harness has no real gateway
+uci -q set apman.global.whitelist=1; uci -q commit apman
+APMAN_GW_MAC=$WLGW /usr/sbin/apman-apply >/dev/null 2>&1
+nft list chain bridge apman wlguard >/dev/null 2>&1
+chk "T12 wlguard chain created when enabled" $?
+nft list set bridge apman wanmac 2>/dev/null | grep -qi "$WLGW"
+chk "T12 gateway MAC captured in wanmac set" $?
+nft list chain bridge apman wlguard | grep -q 'ether saddr != @allowed'
+chk "T12 guard excludes allowed devices" $?
+# a managed device must be in allowed; block/pause must remove it
+nft list set bridge apman allowed 2>/dev/null | grep -qi "$W1MAC"
+chk "T12 managed device is allowed" $?
+setcap block 1
+nft list set bridge apman allowed 2>/dev/null | grep -qi "$W1MAC"
+chk "T12 blocked device removed from allowed (expect no match)" $((1 - $?))
+setcap block 0
+APMAN_GW_MAC=$WLGW /usr/sbin/apman-apply >/dev/null 2>&1
+nft list set bridge apman allowed 2>/dev/null | grep -qi "$W1MAC"
+chk "T12 unblocked device returns to allowed" $?
+# no managed devices at all must still deny everyone (empty allowed set parses)
+: > "$RUN/devices.tsv.empty"
+APMAN_DEVICES_TSV=$RUN/devices.tsv.empty APMAN_GW_MAC=$WLGW /usr/sbin/apman-apply >/dev/null 2>&1
+nft list chain bridge apman wlguard | grep -q 'ether saddr != @allowed ether daddr @wanmac drop'
+chk "T12 empty allowlist still generates the deny rule" $?
+/usr/sbin/apman-apply >/dev/null 2>&1
+# fail open: no gateway MAC known => no guard (a missing route must not brick wifi)
+APMAN_GW_MAC= /usr/sbin/apman-apply >/dev/null 2>&1
+uci -q set apman.global.whitelist=0; uci -q commit apman
+/usr/sbin/apman-apply >/dev/null 2>&1
+nft list chain bridge apman wlguard >/dev/null 2>&1
+chk "T12 guard removed when whitelist disabled (expect absent)" $((1 - $?))
+APMAN_ONCE=1 /usr/sbin/apman-collect >/dev/null 2>&1
+python3 -c "
+import json;s=json.load(open('$RUN/status.json'));assert 'whitelist' in s['settings'];assert 'gateway_mac' in s['settings']"
+chk "T12 status.json reports whitelist state + gateway" $?
+
 # ---------- summary ----------
 echo "=============================================="
 echo "PASS=$PASS FAIL=$FAIL"

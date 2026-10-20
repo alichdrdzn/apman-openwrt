@@ -22,7 +22,7 @@ var callIgnore   = rpc.declare({ object: 'apman', method: 'ignore',
 	params: { mac: '' }, expect: {} });
 var callSettings = rpc.declare({ object: 'apman', method: 'settings',
 	params: { enabled: 0, interval: 0, history_days: 0, snapshot_minutes: 0,
-	ignored_macs: '' }, expect: {} });
+	ignored_macs: '', whitelist: 0 }, expect: {} });
 var callApply    = rpc.declare({ object: 'apman', method: 'apply', expect: {} });
 
 var css = [
@@ -78,6 +78,12 @@ var css = [
 	'.apm-xlab{text-align:center;color:var(--apm-mut);font-size:10px;margin-top:5px;white-space:nowrap}',
 	'.apm-legend{display:flex;gap:14px;color:var(--apm-mut);font-size:12px;margin-top:8px}',
 	'.apm-dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px}',
+	'.apm-hint{color:var(--apm-mut);font-size:11.5px;line-height:1.45;margin-top:3px}',
+	'.apm-hint--warn{color:var(--apm-pause)}',
+	'.apm-net{font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;',
+	'margin-left:6px;border:1px solid var(--apm-line)}',
+	'.apm-net--ok{color:var(--apm-on)}',
+	'.apm-net--no{color:var(--apm-block);border-color:var(--apm-block)}',
 	'.apm-empty{color:var(--apm-mut);padding:26px 10px;text-align:center;',
 	'border:1px dashed var(--apm-line);border-radius:12px}',
 	'.apm-root .cbi-value{border:none;background:none;padding:6px 0}',
@@ -224,6 +230,11 @@ return view.extend({
 		var dnC = fmtKbps(d.down_kbps), upC = fmtKbps(d.up_kbps);
 
 		var chip = E('span', { 'class': 'apm-chip apm-chip--' + state }, _(state));
+		// whitelist mode: say plainly whether this device reaches the internet
+		var wl = Number((st.settings || {}).whitelist) || 0;
+		var netOk = !wl || (!d.block && !paused && !d.overquota);
+		var netChip = wl ? E('span', { 'class': 'apm-net ' + (netOk ? 'apm-net--ok' : 'apm-net--no') },
+			netOk ? _('net on') : _('net off')) : '';
 		var dnB = E('b', { 'class': 'apm-dn-c' }, fmtBps(d.dn_bps));
 		var upB = E('b', { 'class': 'apm-up-c' }, fmtBps(d.up_bps));
 		var tdB = E('b', { 'class': 'apm-dn-c' }, fmtBytes(d.today_dn));
@@ -260,7 +271,8 @@ return view.extend({
 
 		return E('div', { 'class': 'apm-card' }, [
 			E('div', { 'class': 'apm-head' }, [
-				E('div', { 'class': 'apm-name', title: alias }, alias), chip
+				E('div', { 'class': 'apm-name', title: alias }, alias),
+				E('span', {}, [ netChip, chip ])
 			]),
 			meta,
 			E('div', { 'class': 'apm-speeds' }, [
@@ -307,6 +319,7 @@ return view.extend({
 
 	renderUnknown: function (mode) {
 		var self = this, st = this.status || {}, un = st.unknown || {};
+		var wl = Number((st.settings || {}).whitelist) || 0;
 		var keys = Object.keys(un);
 		if (mode === 'busy')
 			keys.sort(function (a, b) {
@@ -329,8 +342,11 @@ return view.extend({
 			self.unkEl.appendChild(E('div', { 'class': 'apm-card' }, [
 				E('div', { 'class': 'apm-head' }, [
 					E('div', { 'class': 'apm-name' }, name || mac),
-					E('span', { 'class': 'apm-chip apm-chip--idle' },
-						seen != null ? (seen < 1 ? _('just now') : seen + ' min') : _('seen'))
+					E('span', {}, [
+						wl ? E('span', { 'class': 'apm-net apm-net--no' }, _('net off')) : '',
+						E('span', { 'class': 'apm-chip apm-chip--idle' },
+							seen != null ? (seen < 1 ? _('just now') : seen + ' min') : _('seen'))
+					])
 				]),
 				E('div', { 'class': 'apm-meta' }, name ? mac : ''),
 				E('div', { 'class': 'apm-usage' }, [
@@ -660,6 +676,22 @@ return view.extend({
 						'value': s.snapshot_minutes || 10 }) ])
 			]),
 			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title', 'for': 'apm-wl' },
+					_('Whitelist mode (block new devices)')),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', { 'type': 'checkbox', 'id': 'apm-wl',
+						checked: (Number(s.whitelist) === 1 || Number(s.whitelist) === 2) ? 'checked' : null }),
+					E('div', { 'class': 'apm-hint' },
+						_('Every wifi device can still join and reach the LAN, but only allowed devices get internet. A phone with a randomised MAC becomes a new device, so it loses internet until you allow it.'))
+				])
+			]),
+			E('div', { 'class': 'cbi-value', 'id': 'apm-wl-state', style: (Number(s.whitelist) === 2) ? '' : 'display:none' }, [
+				E('div', { 'class': 'apm-hint apm-hint--warn' },
+					Number(s.whitelist) === 2
+						? _('No gateway found: whitelist mode is not filtering yet. Set a default route or set the option to forced.')
+						: '')
+			]),
+			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title', 'for': 'apm-ign' },
 					_('Hidden MACs (space separated)')),
 				E('div', { 'class': 'cbi-value-field' }, [
@@ -673,7 +705,8 @@ return view.extend({
 						interval: parseInt(document.getElementById('apm-int').value, 10) || 15,
 						history_days: parseInt(document.getElementById('apm-hd').value, 10) || 30,
 						snapshot_minutes: parseInt(document.getElementById('apm-sm').value, 10) || 10,
-						ignored_macs: document.getElementById('apm-ign').value.trim()
+						ignored_macs: document.getElementById('apm-ign').value.trim(),
+						whitelist: document.getElementById('apm-wl').checked ? 1 : 0
 					};
 					ui.hideModal();
 					callSettings(payload).then(function () { return self.flush(); });

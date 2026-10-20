@@ -4,6 +4,17 @@ config apman 'global'
 	option history_days '30'
 	option snapshot_minutes '10'
 
+# Whitelist (default deny) mode. Off: every device may use the internet and you
+# restrict specific ones. On: only "allowed" devices reach the internet; every
+# other device can still connect to wifi and reach the LAN (printer, NAS,
+# router UI), but not past the gateway. This is what makes randomised MACs
+# harmless: a new random MAC is a new device, so it gets no internet at all
+# until you allow it.
+#   0      = off
+#   1      = on (needs a default route; stays off if the gateway MAC unknown)
+#   forced = on even if the gateway MAC cannot be detected
+	option whitelist '0'
+
 # One section per managed device. The id is the MAC with colons
 # stripped, lowercased. apman-apply derives counter names from it.
 #

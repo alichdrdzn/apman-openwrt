@@ -7,6 +7,10 @@ for the Xiaomi Mi Router 4A Gigabit Edition (v1, 16MB flash).
 - Daily and monthly wifi usage caps per device (0 = off), released
   automatically when the day or month rolls over
 - Pause (timed) and block, wired and wireless
+- Whitelist mode (default deny): only allowed devices reach the internet,
+  every other wifi device still joins and reaches the LAN. This is the
+  reliable answer to randomised MACs, since a new random MAC is a new
+  device and therefore gets no internet until it is allowed
 - Live speeds per device
 - Persistent daily wifi traffic history
 - Dark LuCI dashboard: Services -> AP Manager
@@ -15,7 +19,16 @@ Everything runs on the router. Speed caps, usage caps and accounting
 use nftables bridge-family rules on `br-lan`, scoped to the wifi
 bridge ports (the bridge ports backed by a `phy80211` radio): wired
 clients are never rate-limited and their traffic is never counted.
-Block and pause still stop wired and wifi traffic alike. The uplink
+Block and pause still stop wired and wifi traffic alike.
+
+Whitelist mode keys on the **gateway MAC**, not on address ranges:
+every frame routed off-LAN is addressed to the gateway, while LAN
+peers, DHCP and ARP keep their own destinations. One rule therefore
+cuts internet access only, works for IPv4 and IPv6, and needs no
+knowledge of which bridge port carries the uplink. If no gateway MAC
+can be found (no default route yet at boot) the guard stays off rather
+than locking every wifi client out; the collector retries once a
+minute until it engages. The uplink
 may be a cable or a wifi extender, that never matters. Footprint:
 ~70KB (package 17KB compressed + 6.4KB `kmod-nft-bridge`).
 
@@ -24,7 +37,7 @@ may be a cable or a wifi extender, that never matters. Footprint:
 | Path | What it is |
 | --- | --- |
 | `luci-app-apman/` | The OpenWrt package source (Makefile + files) |
-| `dist/luci-app-apman-1.0.0-r7.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
+| `dist/luci-app-apman-1.0.0-r8.apk` | Prebuilt package for mipsel_24kc (OpenWrt 25.12) |
 | `FLASHING.md` | Exact flashing steps: Windows and Linux VM with NAT |
 | `INSTALL.md` | Package install, usage and configuration reference |
 | `test/e2e-harness.sh` | Host E2E harness: hwsim wifi + wired fixture, 38 checks |
@@ -35,10 +48,10 @@ may be a cable or a wifi extender, that never matters. Footprint:
 2. Install the package:
 
    ```sh
-   scp -O dist/luci-app-apman-1.0.0-r7.apk root@192.168.1.1:/tmp/
+   scp -O dist/luci-app-apman-1.0.0-r8.apk root@192.168.1.1:/tmp/
    ssh root@192.168.1.1
    apk add kmod-nft-bridge
-   apk add /tmp/luci-app-apman-1.0.0-r7.apk
+   apk add /tmp/luci-app-apman-1.0.0-r8.apk
    /etc/init.d/apman enable
    /etc/init.d/apman start
    ```
@@ -65,7 +78,7 @@ make defconfig
 make package/luci-app-apman/compile
 
 # 4. Result
-ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r7.apk
+ls bin/packages/mipsel_24kc/base/luci-app-apman-1.0.0-r8.apk
 ```
 
 Host prerequisite: `apt-get install libncurses-dev`.

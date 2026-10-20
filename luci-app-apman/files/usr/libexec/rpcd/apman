@@ -41,7 +41,7 @@ apply_now() {
 case "$1" in
 list)
 	cat <<'EOF'
-{"status":{},"history":{},"apply":{},"save":{"mac":"x","alias":"x","down_kbps":1,"up_kbps":1,"limit_enabled":1,"block":1,"quota_daily_mb":1,"quota_monthly_mb":1},"pause":{"mac":"x","minutes":1},"unblock":{"mac":"x"},"forget":{"mac":"x"},"adopt":{"mac":"x","alias":"x"},"ignore":{"mac":"x"},"settings":{"enabled":1,"interval":1,"history_days":1,"snapshot_minutes":1,"ignored_macs":"x"}}
+{"status":{},"history":{},"apply":{},"save":{"mac":"x","alias":"x","down_kbps":1,"up_kbps":1,"limit_enabled":1,"block":1,"quota_daily_mb":1,"quota_monthly_mb":1},"pause":{"mac":"x","minutes":1},"unblock":{"mac":"x"},"forget":{"mac":"x"},"adopt":{"mac":"x","alias":"x"},"ignore":{"mac":"x"},"settings":{"enabled":1,"interval":1,"history_days":1,"snapshot_minutes":1,"ignored_macs":"x","whitelist":1}}
 EOF
 	;;
 call)
@@ -192,6 +192,12 @@ call)
 		done
 		IGNJ=$(jget ignored_macs)
 		[ -n "$IGNJ" ] && uci -q set apman.global.ignored_macs="$IGNJ"
+		WLJ=$(jget whitelist)
+		if [ -n "$WLJ" ]; then
+			case "$WLJ" in
+				0|1|forced|true|false|2) uci -q set apman.global.whitelist="$WLJ" ;;
+			esac
+		fi
 		uci -q commit apman
 		apply_now
 		;;
